@@ -52,7 +52,6 @@ constexpr int16_t GAME_BUTTON_H = 25;
 constexpr uint8_t DELIVERY_SOUND_REPEATS = 3;
 constexpr uint32_t DELIVERY_SOUND_GAP_MS = 1000;
 constexpr uint32_t POST_DELIVERY_STANDBY_MS = 15000;
-constexpr uint8_t PRICE_BUTTON_NUMBER = 2;
 
 TFT_eSPI tft;
 
@@ -159,30 +158,6 @@ bool detectDemoMode() {
   return false;
 }
 
-void drawOrderPrompt() {
-  tft.fillScreen(TFT_BLACK);
-  tft.setTextFont(1);
-  tft.setTextSize(2);
-  tft.setTextColor(TFT_WHITE, TFT_BLACK);
-  tft.setTextDatum(MC_DATUM);
-  tft.drawString("Choose an order", tft.width() / 2, 76);
-  tft.setTextSize(1);
-  tft.drawString("Press BTN1, BTN2, BTN3, or BTN4",
-                 tft.width() / 2, 124);
-}
-
-Button waitForOrderButton() {
-  drawOrderPrompt();
-  while (true) {
-    const Button button = readButtonEvent();
-    if (button != Button::None) {
-      waitForButtonRelease();
-      return button;
-    }
-    delay(10);
-  }
-}
-
 void drawOrderFailure() {
   tft.fillScreen(TFT_BLACK);
   tft.setTextFont(1);
@@ -191,7 +166,7 @@ void drawOrderFailure() {
   tft.setTextDatum(MC_DATUM);
   tft.drawString("Order failed", tft.width() / 2, 92);
   tft.setTextSize(1);
-  tft.drawString("Press a button to retry", tft.width() / 2, 132);
+  tft.drawString("Retrying selected order...", tft.width() / 2, 132);
 }
 
 void drawThankYouBlock(TFT_eSPI& display, int16_t x, int16_t thankY,
@@ -263,7 +238,7 @@ bool gameButtonPressed() {
   return readButtonEvent() != Button::None;
 }
 
-void waitForPowerButton() {
+Button waitForPowerButton() {
   if (esp_sleep_get_wakeup_cause() == ESP_SLEEP_WAKEUP_UNDEFINED) {
     digitalWrite(BACKLIGHT_PIN, LOW);
     esp_sleep_enable_ext1_wakeup(1ULL << BUTTON_WAKE_PIN,
@@ -273,10 +248,11 @@ void waitForPowerButton() {
 
   // Any ladder button wakes and starts the device.
   while (true) {
-    if (readButtonEvent() != Button::None) {
+    const Button button = readButtonEvent();
+    if (button != Button::None) {
       startDeviceWiFi();
       waitForButtonRelease();
-      return;
+      return button;
     }
     delay(10);
   }
@@ -483,7 +459,8 @@ void showOrderTimeline() {
   enterStandby(cancelled);
 }
 
-void runCountdownTimer(const char* priceText, bool demoMode) {
+void runCountdownTimer(const char* priceText, bool demoMode,
+                       uint8_t orderButtonNumber) {
   const int16_t centerX = tft.width() / 2;
   const int16_t centerY = TIMER_CENTER_Y;
   const uint32_t startMs = millis();
@@ -528,10 +505,9 @@ void runCountdownTimer(const char* priceText, bool demoMode) {
 
   eraseTimerArcSegment(centerX, centerY, erasedDegrees, 360.0f);
   if (!demoMode) {
-    Button selectedButton = waitForOrderButton();
-    while (!submitDeviceOrder(static_cast<uint8_t>(selectedButton))) {
+    while (!submitDeviceOrder(orderButtonNumber)) {
       drawOrderFailure();
-      selectedButton = waitForOrderButton();
+      delay(1000);
     }
   }
 
@@ -545,7 +521,7 @@ void setup() {
   digitalWrite(BACKLIGHT_PIN, LOW);
 
   initButtons();
-  waitForPowerButton();
+  const Button wakeButton = waitForPowerButton();
 
   tft.init();
   tft.setRotation(DISPLAY_ROTATION);
@@ -561,18 +537,19 @@ void setup() {
   }
 
   if (demoMode) {
-    runCountdownTimer("DEMO $4.25", true);
+    runCountdownTimer("DEMO $4.25", true, 0);
     return;
   }
 
   ensureDevicePaired(tft);
   String priceText;
-  if (!fetchDevicePrice(PRICE_BUTTON_NUMBER, priceText)) {
+  const uint8_t orderButtonNumber = static_cast<uint8_t>(wakeButton);
+  if (!fetchDevicePrice(orderButtonNumber, priceText)) {
     drawPriceUnavailable();
     delay(2000);
     enterStandby(false);
   }
-  runCountdownTimer(priceText.c_str(), false);
+  runCountdownTimer(priceText.c_str(), false, orderButtonNumber);
 }
 
 void loop() {

@@ -2,6 +2,6 @@
 
 #include <stdint.h>
 
-void audioBegin(bool settleSpeaker = true);
+void audioBegin();
 void audioPlayTone(uint16_t frequency, uint16_t durationMs);
 void audioEnd();

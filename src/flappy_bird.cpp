@@ -21,25 +21,19 @@ constexpr int16_t BACK_BUTTON_W = 66;
 constexpr int16_t BACK_BUTTON_H = 25;
 
 void playFlapSound() {
-  audioBegin(false);
   audioPlayTone(880, 18);
-  audioEnd();
 }
 
 void playScoreSound() {
-  audioBegin(false);
   audioPlayTone(1175, 35);
   delay(8);
   audioPlayTone(1568, 45);
-  audioEnd();
 }
 
 void playGameOverSound() {
-  audioBegin(false);
   audioPlayTone(440, 100);
   delay(20);
   audioPlayTone(330, 140);
-  audioEnd();
 }
 
 void drawBackButton(TFT_eSPI& display) {
@@ -107,6 +101,8 @@ void runFlappyBird(TFT_eSPI& display) {
   const int16_t screenH = display.height();
 
   waitForButtonRelease();
+  // Keep the speaker enabled while the game runs so short effects are heard.
+  audioBegin();
 
   TFT_eSprite gameFrame(&display);
   gameFrame.setColorDepth(8);
@@ -132,6 +128,7 @@ void runFlappyBird(TFT_eSPI& display) {
 
       const Button button = readButtonEvent();
       if (button == Button::Button4) {
+        audioEnd();
         waitForButtonRelease();
         return;
       }
@@ -186,6 +183,7 @@ void runFlappyBird(TFT_eSPI& display) {
     while (true) {
       const Button button = readButtonEvent();
       if (button == Button::Button4) {
+        audioEnd();
         waitForButtonRelease();
         return;
       }

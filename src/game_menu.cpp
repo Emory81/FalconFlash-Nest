@@ -4,6 +4,7 @@
 
 #include "button_input.h"
 #include "flappy_bird.h"
+#include "guitar_hero.h"
 
 namespace {
 constexpr uint16_t MENU_BG = 0x18C7;
@@ -16,7 +17,8 @@ constexpr int16_t TILE_LEFT = 8;
 constexpr int16_t TILE_TOP = 36;
 
 constexpr const char* GAME_NAMES[] = {
-    "Flappy Bird", "Snake", "Pong", "Brick Breaker", "Runner", "Memory"};
+    "Flappy Bird", "Guitar Hero", "Pong", "Brick Breaker", "Runner",
+    "Memory"};
 
 int16_t tileX(uint8_t index) {
   return TILE_LEFT + (index % 3) * (TILE_WIDTH + TILE_GAP);
@@ -33,12 +35,17 @@ void drawFlappyIcon(TFT_eSPI& display, int16_t x, int16_t y) {
   display.fillCircle(x + 42, y + 19, 2, TFT_BLACK);
 }
 
-void drawSnakeIcon(TFT_eSPI& display, int16_t x, int16_t y) {
-  display.drawLine(x + 12, y + 28, x + 28, y + 28, TFT_GREEN);
-  display.drawLine(x + 28, y + 28, x + 28, y + 12, TFT_GREEN);
-  display.drawLine(x + 28, y + 12, x + 52, y + 12, TFT_GREEN);
-  display.fillCircle(x + 52, y + 12, 4, TFT_GREEN);
-  display.fillCircle(x + 63, y + 30, 4, TFT_RED);
+void drawGuitarIcon(TFT_eSPI& display, int16_t x, int16_t y) {
+  display.fillRoundRect(x + 27, y + 3, 14, 42, 4, TFT_DARKGREY);
+  display.drawRoundRect(x + 27, y + 3, 14, 42, 4, TFT_WHITE);
+  display.fillCircle(x + 34, y + 42, 12, TFT_RED);
+  display.drawCircle(x + 34, y + 42, 12, TFT_WHITE);
+  display.drawFastVLine(x + 31, y + 8, 31, TFT_WHITE);
+  display.drawFastVLine(x + 37, y + 8, 31, TFT_WHITE);
+  display.drawFastHLine(x + 28, y + 14, 12, TFT_YELLOW);
+  display.drawFastHLine(x + 28, y + 23, 12, TFT_YELLOW);
+  display.fillCircle(x + 57, y + 12, 4, TFT_YELLOW);
+  display.fillCircle(x + 67, y + 28, 4, TFT_CYAN);
 }
 
 void drawPongIcon(TFT_eSPI& display, int16_t x, int16_t y) {
@@ -78,7 +85,7 @@ void drawGameIcon(TFT_eSPI& display, uint8_t index, int16_t x, int16_t y) {
       drawFlappyIcon(display, x, y);
       break;
     case 1:
-      drawSnakeIcon(display, x, y);
+      drawGuitarIcon(display, x, y);
       break;
     case 2:
       drawPongIcon(display, x, y);
@@ -150,6 +157,8 @@ void showComingSoon(TFT_eSPI& display, const char* name) {
 void launchSelectedGame(TFT_eSPI& display, uint8_t selectedIndex) {
   if (selectedIndex == 0) {
     runFlappyBird(display);
+  } else if (selectedIndex == 1) {
+    runGuitarHero(display);
   } else {
     showComingSoon(display, GAME_NAMES[selectedIndex]);
   }

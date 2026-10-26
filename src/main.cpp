@@ -390,12 +390,35 @@ bool waitForPostDeliveryStandby() {
   }
 }
 
-void showOrderTimeline() {
-  TFT_eSprite screen(&tft);
+bool createTimelineSprite(TFT_eSprite& screen) {
   // An 8-bit sprite cuts the amount of data pushed per frame in half.
   screen.setColorDepth(8);
   screen.createSprite(tft.width(), tft.height());
-  const bool useSprite = screen.created();
+  return screen.created();
+}
+
+void showGamesFromTimeline(TFT_eSprite& screen, bool& useSprite,
+                           int16_t scrollOffset, uint8_t activeStage) {
+  // The game needs the same large sprite buffer. Release the timeline buffer
+  // first so the game does not silently fall back to direct, flickery drawing.
+  screen.deleteSprite();
+  useSprite = false;
+
+  showGameMenu(tft);
+
+  // Recreate the timeline buffer after the game has released its buffer.
+  useSprite = createTimelineSprite(screen);
+  if (useSprite) {
+    drawOrderTimelineFrame(screen, scrollOffset, activeStage);
+    screen.pushSprite(0, 0);
+  } else {
+    drawOrderTimelineFrame(tft, scrollOffset, activeStage);
+  }
+}
+
+void showOrderTimeline() {
+  TFT_eSprite screen(&tft);
+  bool useSprite = createTimelineSprite(screen);
 
   int16_t scrollOffset = 0;
   if (useSprite) {
@@ -410,7 +433,7 @@ void showOrderTimeline() {
     while (millis() - holdStart < ORDER_STATUS_HOLD_MS) {
       if (gameButtonPressed()) {
         waitForButtonRelease();
-        showGameMenu(tft);
+        showGamesFromTimeline(screen, useSprite, scrollOffset, stage - 1);
       }
       delay(10);
     }
@@ -434,7 +457,7 @@ void showOrderTimeline() {
       }
       if (gameButtonPressed()) {
         waitForButtonRelease();
-        showGameMenu(tft);
+        showGamesFromTimeline(screen, useSprite, scrollOffset, stage);
       }
       delay(ORDER_STATUS_FRAME_MS);
     }

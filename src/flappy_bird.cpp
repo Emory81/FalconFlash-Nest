@@ -4,6 +4,7 @@
 
 #include <cstdio>
 
+#include "audio_helper.h"
 #include "button_input.h"
 
 namespace {
@@ -18,6 +19,28 @@ constexpr int16_t BACK_BUTTON_X = 8;
 constexpr int16_t BACK_BUTTON_Y = 208;
 constexpr int16_t BACK_BUTTON_W = 66;
 constexpr int16_t BACK_BUTTON_H = 25;
+
+void playFlapSound() {
+  audioBegin(false);
+  audioPlayTone(880, 18);
+  audioEnd();
+}
+
+void playScoreSound() {
+  audioBegin(false);
+  audioPlayTone(1175, 35);
+  delay(8);
+  audioPlayTone(1568, 45);
+  audioEnd();
+}
+
+void playGameOverSound() {
+  audioBegin(false);
+  audioPlayTone(440, 100);
+  delay(20);
+  audioPlayTone(330, 140);
+  audioEnd();
+}
 
 void drawBackButton(TFT_eSPI& display) {
   display.fillRoundRect(BACK_BUTTON_X, BACK_BUTTON_Y, BACK_BUTTON_W,
@@ -114,6 +137,7 @@ void runFlappyBird(TFT_eSPI& display) {
       }
       if (button == Button::Button1) {
         birdVelocity = FLAP_VELOCITY;
+        playFlapSound();
       }
 
       birdVelocity += GRAVITY;
@@ -123,6 +147,7 @@ void runFlappyBird(TFT_eSPI& display) {
       if (!pipeScored && pipeX + PIPE_WIDTH < BIRD_X) {
         ++score;
         pipeScored = true;
+        playScoreSound();
       }
       if (pipeX + PIPE_WIDTH < 0) {
         pipeX = screenW + 20.0f;
@@ -156,6 +181,7 @@ void runFlappyBird(TFT_eSPI& display) {
     } else {
       drawGameOver(display);
     }
+    playGameOverSound();
 
     while (true) {
       const Button button = readButtonEvent();

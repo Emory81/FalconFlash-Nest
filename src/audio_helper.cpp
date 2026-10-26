@@ -10,11 +10,13 @@ constexpr uint8_t DAC_MAX = 255;
 constexpr uint16_t SPEAKER_SETTLE_MS = 80;
 }  // namespace
 
-void audioBegin() {
+void audioBegin(bool settleSpeaker) {
   pinMode(SPEAKER_ENABLE_PIN, OUTPUT);
   digitalWrite(SPEAKER_ENABLE_PIN, LOW);
   dacWrite(AUDIO_DAC_PIN, DAC_MIN);
-  delay(SPEAKER_SETTLE_MS);
+  if (settleSpeaker) {
+    delay(SPEAKER_SETTLE_MS);
+  }
 }
 
 void audioPlayTone(uint16_t frequency, uint16_t durationMs) {

@@ -160,17 +160,18 @@ bool responseIndicatesUnarmed(const String& response) {
   String normalizedResponse = response;
   normalizedResponse.toLowerCase();
   if (normalizedResponse.indexOf("not armed") >= 0 ||
+      normalizedResponse.indexOf("not_armed") >= 0 ||
+      normalizedResponse.indexOf("button_not_armed") >= 0 ||
       normalizedResponse.indexOf("unarmed") >= 0) {
     return true;
   }
 
-  const int armedKey = normalizedResponse.indexOf("\"armed\"");
-  if (armedKey >= 0) {
-    const int colon = normalizedResponse.indexOf(':', armedKey);
-    if (colon >= 0 &&
-        normalizedResponse.indexOf("false", colon + 1) >= 0) {
-      return true;
-    }
+  const String armedValue = extractJsonScalar(normalizedResponse, "armed");
+  const String isArmedValue =
+      extractJsonScalar(normalizedResponse, "is_armed");
+  if (armedValue == "false" || armedValue == "0" ||
+      isArmedValue == "false" || isArmedValue == "0") {
+    return true;
   }
   return false;
 }
@@ -407,6 +408,10 @@ DevicePriceStatus fetchDevicePrice(uint8_t buttonNumber, String& priceText) {
   String response;
   const int status = postJson(PRICE_PATH, body, false, token, response);
   if (responseIndicatesUnarmed(response)) {
+    return DevicePriceStatus::Unarmed;
+  }
+  if (status == 400 || status == 409 || status == 422) {
+    // The price endpoint uses client-error responses for unavailable buttons.
     return DevicePriceStatus::Unarmed;
   }
   if (status == 401 || status == 403 || status == 404) {

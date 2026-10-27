@@ -169,6 +169,13 @@ String loadDeviceToken() {
   return token;
 }
 
+void clearDeviceToken() {
+  Preferences preferences;
+  preferences.begin("falcon", false);
+  preferences.remove("device_token");
+  preferences.end();
+}
+
 void saveDeviceToken(const String& token) {
   Preferences preferences;
   preferences.begin("falcon", false);
@@ -250,9 +257,9 @@ bool ensureDevicePaired(TFT_eSPI& display) {
   }
 }
 
-bool fetchDevicePrice(uint8_t buttonNumber, String& priceText) {
+DevicePriceStatus fetchDevicePrice(uint8_t buttonNumber, String& priceText) {
   if (buttonNumber < 1 || buttonNumber > 4) {
-    return false;
+    return DevicePriceStatus::Unavailable;
   }
   if (WiFi.status() != WL_CONNECTED) {
     WiFi.reconnect();
@@ -263,31 +270,35 @@ bool fetchDevicePrice(uint8_t buttonNumber, String& priceText) {
     }
   }
   if (WiFi.status() != WL_CONNECTED) {
-    return false;
+    return DevicePriceStatus::Unavailable;
   }
 
   const String token = loadDeviceToken();
   if (token.length() == 0) {
-    return false;
+    return DevicePriceStatus::NeedsPairing;
   }
 
   const String body = "{\"button_number\":" + String(buttonNumber) + "}";
   String response;
   const int status = postJson(PRICE_PATH, body, false, token, response);
+  if (status == 401 || status == 403 || status == 404) {
+    clearDeviceToken();
+    return DevicePriceStatus::NeedsPairing;
+  }
   if (status < 200 || status >= 300) {
-    return false;
+    return DevicePriceStatus::Unavailable;
   }
 
   const String amount = extractJsonNumber(response, "amount");
   if (amount.length() == 0) {
-    return false;
+    return DevicePriceStatus::Unavailable;
   }
 
   char formattedPrice[16];
   snprintf(formattedPrice, sizeof(formattedPrice), "$%.2f",
            amount.toFloat());
   priceText = formattedPrice;
-  return true;
+  return DevicePriceStatus::Success;
 }
 
 bool submitDeviceOrder(uint8_t buttonNumber) {

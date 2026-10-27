@@ -544,7 +544,14 @@ void setup() {
   ensureDevicePaired(tft);
   String priceText;
   const uint8_t orderButtonNumber = static_cast<uint8_t>(wakeButton);
-  if (!fetchDevicePrice(orderButtonNumber, priceText)) {
+  DevicePriceStatus priceStatus =
+      fetchDevicePrice(orderButtonNumber, priceText);
+  if (priceStatus == DevicePriceStatus::NeedsPairing) {
+    // The server rejected the saved token, so pair this device again.
+    ensureDevicePaired(tft);
+    priceStatus = fetchDevicePrice(orderButtonNumber, priceText);
+  }
+  if (priceStatus != DevicePriceStatus::Success) {
     drawPriceUnavailable();
     delay(2000);
     enterStandby(false);

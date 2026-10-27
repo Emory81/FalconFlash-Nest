@@ -7,5 +7,10 @@
 
 void startDeviceWiFi();
 bool ensureDevicePaired(TFT_eSPI& display);
-bool fetchDevicePrice(uint8_t buttonNumber, String& priceText);
+enum class DevicePriceStatus : uint8_t {
+  Success,
+  Unavailable,
+  NeedsPairing,
+};
+DevicePriceStatus fetchDevicePrice(uint8_t buttonNumber, String& priceText);
 bool submitDeviceOrder(uint8_t buttonNumber);

@@ -6,6 +6,7 @@
 
 #include "audio_helper.h"
 #include "button_input.h"
+#include "flappy_sprites.h"
 
 namespace {
 constexpr int16_t GROUND_HEIGHT = 18;
@@ -49,8 +50,34 @@ void drawBackButton(TFT_eSPI& display) {
                      BACK_BUTTON_Y + BACK_BUTTON_H / 2);
 }
 
-void drawFrame(TFT_eSPI& display, float birdY, int16_t pipeX, int16_t gapTop,
-               uint16_t score) {
+// Wing frame follows the bird's vertical speed: open just after a flap,
+// closed while falling.
+const uint16_t* birdFrame(float birdVelocity) {
+  if (birdVelocity < -2.0f) {
+    return birdFlapOpen;
+  }
+  if (birdVelocity < 1.5f) {
+    return birdFlapTransition;
+  }
+  return birdFlapClosed;
+}
+
+// TFT_eSprite has no transparent pushImage(), so skip see-through pixels by
+// hand. drawPixel() is virtual, so this works on the sprite and the screen.
+void drawSprite(TFT_eSPI& display, int16_t x, int16_t y, int16_t w, int16_t h,
+                const uint16_t* pixels) {
+  for (int16_t row = 0; row < h; ++row) {
+    for (int16_t col = 0; col < w; ++col) {
+      const uint16_t color = pixels[row * w + col];
+      if (color != SPRITE_TRANSPARENT) {
+        display.drawPixel(x + col, y + row, color);
+      }
+    }
+  }
+}
+
+void drawFrame(TFT_eSPI& display, float birdY, float birdVelocity, int16_t pipeX,
+               int16_t gapTop, uint16_t score) {
   const int16_t screenW = display.width();
   const int16_t screenH = display.height();
   const int16_t gapBottom = gapTop + GAP_HEIGHT;
@@ -65,10 +92,10 @@ void drawFrame(TFT_eSPI& display, float birdY, int16_t pipeX, int16_t gapTop,
   display.drawRect(pipeX, gapBottom, PIPE_WIDTH,
                    screenH - GROUND_HEIGHT - gapBottom, TFT_DARKGREEN);
 
-  display.fillCircle(BIRD_X, static_cast<int16_t>(birdY), 10, TFT_YELLOW);
-  display.drawCircle(BIRD_X, static_cast<int16_t>(birdY), 10, TFT_BLACK);
-  display.fillCircle(BIRD_X + 4, static_cast<int16_t>(birdY) - 3, 2,
-                     TFT_BLACK);
+  drawSprite(display, BIRD_X - BIRD_FLAP_OPEN_WIDTH / 2,
+             static_cast<int16_t>(birdY) - BIRD_FLAP_OPEN_HEIGHT / 2,
+             BIRD_FLAP_OPEN_WIDTH, BIRD_FLAP_OPEN_HEIGHT,
+             birdFrame(birdVelocity));
 
   display.setTextFont(1);
   display.setTextSize(2);
@@ -129,6 +156,7 @@ void runFlappyBird(TFT_eSPI& display) {
       const Button button = readButtonEvent();
       if (button == Button::Button4) {
         audioEnd();
+        gameFrame.deleteSprite();
         waitForButtonRelease();
         return;
       }
@@ -164,11 +192,12 @@ void runFlappyBird(TFT_eSPI& display) {
       }
 
       if (useSprite) {
-        drawFrame(gameFrame, birdY, static_cast<int16_t>(pipeX), gapTop,
-                  score);
+        drawFrame(gameFrame, birdY, birdVelocity, static_cast<int16_t>(pipeX),
+                  gapTop, score);
         gameFrame.pushSprite(0, 0);
       } else {
-        drawFrame(display, birdY, static_cast<int16_t>(pipeX), gapTop, score);
+        drawFrame(display, birdY, birdVelocity, static_cast<int16_t>(pipeX),
+                  gapTop, score);
       }
     }
 
@@ -184,6 +213,7 @@ void runFlappyBird(TFT_eSPI& display) {
       const Button button = readButtonEvent();
       if (button == Button::Button4) {
         audioEnd();
+        gameFrame.deleteSprite();
         waitForButtonRelease();
         return;
       }

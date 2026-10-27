@@ -23,6 +23,7 @@ constexpr char PAIRING_CODE_PATH[] = "/nest/device/pairing-code";
 constexpr char PAIRING_STATUS_PATH[] = "/nest/device/pairing-status";
 constexpr char PRICE_PATH[] = "/nest/device/price";
 constexpr char ORDER_PATH[] = "/nest/device/order";
+constexpr char ORDER_STATUS_PATH[] = "/order_status";
 constexpr uint32_t WIFI_RETRY_MS = 10000;
 constexpr uint32_t PAIRING_POLL_MS = 2000;
 constexpr uint32_t DEFAULT_PAIRING_EXPIRY_MS = 600000;
@@ -96,6 +97,50 @@ String extractJsonNumber(const String& json, const char* key) {
   return json.substring(valueStart, valueEnd);
 }
 
+String extractJsonScalar(const String& json, const char* key) {
+  const String keyToken = "\"" + String(key) + "\"";
+  const int keyStart = json.indexOf(keyToken);
+  if (keyStart < 0) {
+    return String();
+  }
+
+  const int colon = json.indexOf(':', keyStart + keyToken.length());
+  if (colon < 0) {
+    return String();
+  }
+
+  int valueStart = colon + 1;
+  while (valueStart < json.length() &&
+         (json[valueStart] == ' ' || json[valueStart] == '\n' ||
+          json[valueStart] == '\r' || json[valueStart] == '\t')) {
+    ++valueStart;
+  }
+  if (valueStart >= json.length()) {
+    return String();
+  }
+
+  if (json[valueStart] == '"') {
+    const int closingQuote = json.indexOf('"', valueStart + 1);
+    if (closingQuote < 0) {
+      return String();
+    }
+    return json.substring(valueStart + 1, closingQuote);
+  }
+
+  int valueEnd = valueStart;
+  while (valueEnd < json.length() && json[valueEnd] != ',' &&
+         json[valueEnd] != '}') {
+    ++valueEnd;
+  }
+
+  String value = json.substring(valueStart, valueEnd);
+  value.trim();
+  if (value == "null") {
+    return String();
+  }
+  return value;
+}
+
 bool jsonValueIsTrue(const String& json, const char* key) {
   const String keyToken = "\"" + String(key) + "\"";
   const int keyStart = json.indexOf(keyToken);
@@ -156,6 +201,23 @@ int postJson(const char* path, const String& body, bool useFactoryHeaders,
   }
 
   const int status = http.POST(body);
+  response = http.getString();
+  http.end();
+  return status;
+}
+
+int getJson(const String& path, String& response) {
+  WiFiClientSecure client;
+  client.setInsecure();
+
+  HTTPClient http;
+  const String url = String(BASE_URL) + path;
+  if (!http.begin(client, url)) {
+    return -1;
+  }
+  http.setTimeout(10000);
+
+  const int status = http.GET();
   response = http.getString();
   http.end();
   return status;
@@ -301,7 +363,8 @@ DevicePriceStatus fetchDevicePrice(uint8_t buttonNumber, String& priceText) {
   return DevicePriceStatus::Success;
 }
 
-bool submitDeviceOrder(uint8_t buttonNumber) {
+bool submitDeviceOrder(uint8_t buttonNumber, String& orderId) {
+  orderId = String();
   if (buttonNumber < 1 || buttonNumber > 4) {
     return false;
   }
@@ -328,5 +391,53 @@ bool submitDeviceOrder(uint8_t buttonNumber) {
       ",\"event_id\":\"" + eventId + "\"}";
   String response;
   const int status = postJson(ORDER_PATH, body, false, token, response);
-  return status >= 200 && status < 300;
+  if (status < 200 || status >= 300) {
+    return false;
+  }
+
+  // The status endpoint accepts the public order number. Prefer it when the
+  // order response includes both the internal ID and public order number.
+  orderId = extractJsonScalar(response, "order_number");
+  if (orderId.length() == 0) {
+    orderId = extractJsonScalar(response, "order_id");
+  }
+  if (orderId.length() == 0) {
+    orderId = extractJsonScalar(response, "id");
+  }
+  return orderId.length() > 0;
+}
+
+bool fetchOrderStatus(const String& orderId, OrderStatus& status) {
+  if (orderId.length() == 0) {
+    return false;
+  }
+  if (!connectToWiFi()) {
+    return false;
+  }
+
+  String response;
+  const String path = String(ORDER_STATUS_PATH) + "?id=" + orderId;
+  const int httpStatus = getJson(path, response);
+  if (httpStatus < 200 || httpStatus >= 300) {
+    return false;
+  }
+
+  status.orderStatus = extractJsonScalar(response, "order_status");
+  status.orderNumber = extractJsonScalar(response, "order_number");
+  status.orderPlacedAt = extractJsonScalar(response, "order_placed");
+  status.orderPlaced = status.orderPlacedAt.length() > 0;
+  status.customerOrderPlacedAt =
+      extractJsonScalar(response, "customer_order_placed_at");
+  const String flasherAssigned =
+      extractJsonScalar(response, "flasher_assigned");
+  status.flasherAssigned =
+      flasherAssigned.length() > 0 && flasherAssigned != "false";
+  status.deliveredAt = extractJsonScalar(response, "delivered_at");
+  status.orderPhoto = extractJsonScalar(response, "order_photo");
+
+  return status.orderStatus.length() > 0 ||
+         status.orderNumber.length() > 0 ||
+         status.orderPlacedAt.length() > 0 ||
+         status.customerOrderPlacedAt.length() > 0 ||
+         status.deliveredAt.length() > 0;
 }

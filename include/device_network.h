@@ -12,5 +12,18 @@ enum class DevicePriceStatus : uint8_t {
   Unavailable,
   NeedsPairing,
 };
+
+struct OrderStatus {
+  String orderStatus;
+  String orderNumber;
+  bool orderPlaced;
+  String orderPlacedAt;
+  String customerOrderPlacedAt;
+  bool flasherAssigned;
+  String deliveredAt;
+  String orderPhoto;
+};
+
 DevicePriceStatus fetchDevicePrice(uint8_t buttonNumber, String& priceText);
-bool submitDeviceOrder(uint8_t buttonNumber);
+bool submitDeviceOrder(uint8_t buttonNumber, String& orderId);
+bool fetchOrderStatus(const String& orderId, OrderStatus& status);

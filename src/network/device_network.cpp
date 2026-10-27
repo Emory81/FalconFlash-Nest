@@ -27,9 +27,12 @@ constexpr char PRICE_PATH[] = "/nest/device/price";
 constexpr char ORDER_PATH[] = "/nest/device/order";
 constexpr char ORDER_STATUS_PATH[] = "/order_status";
 constexpr uint32_t WIFI_RETRY_MS = 10000;
+constexpr uint32_t WIFI_HINT_FALLBACK_MS = 3000;
 constexpr uint32_t PAIRING_POLL_MS = 2000;
 constexpr uint32_t DEFAULT_PAIRING_EXPIRY_MS = 600000;
 bool wifiStarted = false;
+bool wifiHintActive = false;
+uint32_t wifiAttemptStartedAt = 0;
 
 void drawCenteredText(TFT_eSPI& display, const char* text, uint8_t size,
                       int16_t y) {
@@ -214,6 +217,7 @@ bool connectToWiFi() {
     WiFi.mode(WIFI_STA);
     WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
     wifiStarted = true;
+    wifiAttemptStartedAt = millis();
   }
 
   uint32_t attemptStartedAt = millis();
@@ -320,7 +324,9 @@ void startDeviceWiFi() {
 
   uint8_t cachedChannel = 0;
   uint8_t cachedBssid[6] = {};
-  if (loadWiFiHint(cachedChannel, cachedBssid)) {
+  wifiHintActive = loadWiFiHint(cachedChannel, cachedBssid);
+  wifiAttemptStartedAt = millis();
+  if (wifiHintActive) {
     WiFi.begin(WIFI_SSID, WIFI_PASSWORD, cachedChannel, cachedBssid, true);
   } else {
     WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
@@ -329,6 +335,13 @@ void startDeviceWiFi() {
 }
 
 bool deviceWiFiConnected() {
+  if (WiFi.status() != WL_CONNECTED && wifiHintActive &&
+      millis() - wifiAttemptStartedAt >= WIFI_HINT_FALLBACK_MS) {
+    WiFi.disconnect();
+    WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+    wifiHintActive = false;
+    wifiAttemptStartedAt = millis();
+  }
   return WiFi.status() == WL_CONNECTED;
 }
 

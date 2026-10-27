@@ -101,6 +101,20 @@ void drawPriceUnavailable() {
   tft.drawString("Check network or device status", tft.width() / 2, 132);
 }
 
+void drawButtonUnarmed(uint8_t buttonNumber) {
+  tft.fillScreen(TFT_BLACK);
+  tft.setTextFont(1);
+  tft.setTextSize(2);
+  tft.setTextColor(TFT_WHITE, TFT_BLACK);
+  tft.setTextDatum(MC_DATUM);
+  tft.drawString("Button not armed", tft.width() / 2, 92);
+
+  char message[24];
+  snprintf(message, sizeof(message), "BTN%u is not armed", buttonNumber);
+  tft.setTextSize(1);
+  tft.drawString(message, tft.width() / 2, 132);
+}
+
 DevicePriceStatus fetchPriceWithRetry(uint8_t buttonNumber,
                                       String& priceText) {
   DevicePriceStatus status = DevicePriceStatus::Unavailable;
@@ -730,7 +744,11 @@ void setup() {
     priceStatus = fetchPriceWithRetry(orderButtonNumber, priceText);
   }
   if (priceStatus != DevicePriceStatus::Success) {
-    drawPriceUnavailable();
+    if (priceStatus == DevicePriceStatus::Unarmed) {
+      drawButtonUnarmed(orderButtonNumber);
+    } else {
+      drawPriceUnavailable();
+    }
     delay(2000);
     enterStandby(false);
   }

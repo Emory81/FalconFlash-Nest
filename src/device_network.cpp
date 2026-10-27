@@ -156,6 +156,25 @@ bool jsonValueIsTrue(const String& json, const char* key) {
   return json.indexOf("true", colon + 1) >= 0;
 }
 
+bool responseIndicatesUnarmed(const String& response) {
+  String normalizedResponse = response;
+  normalizedResponse.toLowerCase();
+  if (normalizedResponse.indexOf("not armed") >= 0 ||
+      normalizedResponse.indexOf("unarmed") >= 0) {
+    return true;
+  }
+
+  const int armedKey = normalizedResponse.indexOf("\"armed\"");
+  if (armedKey >= 0) {
+    const int colon = normalizedResponse.indexOf(':', armedKey);
+    if (colon >= 0 &&
+        normalizedResponse.indexOf("false", colon + 1) >= 0) {
+      return true;
+    }
+  }
+  return false;
+}
+
 bool loadWiFiHint(uint8_t& channel, uint8_t* bssid) {
   Preferences preferences;
   preferences.begin("falcon", true);
@@ -387,6 +406,9 @@ DevicePriceStatus fetchDevicePrice(uint8_t buttonNumber, String& priceText) {
   const String body = "{\"button_number\":" + String(buttonNumber) + "}";
   String response;
   const int status = postJson(PRICE_PATH, body, false, token, response);
+  if (responseIndicatesUnarmed(response)) {
+    return DevicePriceStatus::Unarmed;
+  }
   if (status == 401 || status == 403 || status == 404) {
     clearDeviceToken();
     return DevicePriceStatus::NeedsPairing;
@@ -397,6 +419,9 @@ DevicePriceStatus fetchDevicePrice(uint8_t buttonNumber, String& priceText) {
 
   const String amount = extractJsonNumber(response, "amount");
   if (amount.length() == 0) {
+    if (responseIndicatesUnarmed(response)) {
+      return DevicePriceStatus::Unarmed;
+    }
     return DevicePriceStatus::Unavailable;
   }
 

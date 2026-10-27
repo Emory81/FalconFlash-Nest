@@ -11,6 +11,7 @@ bool ensureDevicePaired(TFT_eSPI& display);
 enum class DevicePriceStatus : uint8_t {
   Success,
   Unavailable,
+  Unarmed,
   NeedsPairing,
 };
 

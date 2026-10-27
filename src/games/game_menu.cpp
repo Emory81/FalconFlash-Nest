@@ -1,10 +1,10 @@
-#include "game_menu.h"
+#include "games/game_menu.h"
 
 #include <Arduino.h>
 
-#include "button_input.h"
-#include "flappy_bird.h"
-#include "guitar_hero.h"
+#include "games/flappy_bird.h"
+#include "games/guitar_hero.h"
+#include "input/button_input.h"
 
 namespace {
 constexpr uint16_t MENU_BG = 0x18C7;

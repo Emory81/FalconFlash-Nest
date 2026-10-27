@@ -4,14 +4,14 @@
 
 #include <cstdio>
 
-#include "boot_sound.h"
-#include "button_input.h"
-#include "delivery_sound.h"
-#include "device_network.h"
-#include "display_config.h"
-#include "falcon_logo.h"
-#include "game_menu.h"
-#include "power_down_sound.h"
+#include "audio/boot_sound.h"
+#include "audio/delivery_sound.h"
+#include "audio/power_down_sound.h"
+#include "display/display_config.h"
+#include "display/falcon_logo.h"
+#include "games/game_menu.h"
+#include "input/button_input.h"
+#include "network/device_network.h"
 
 #ifndef FALCON_GAME_MODE_ONLY
 #define FALCON_GAME_MODE_ONLY 0

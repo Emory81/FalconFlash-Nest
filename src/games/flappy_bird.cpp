@@ -1,11 +1,11 @@
-#include "flappy_bird.h"
+#include "games/flappy_bird.h"
 
 #include <Arduino.h>
 
 #include <cstdio>
 
-#include "audio_helper.h"
-#include "button_input.h"
+#include "audio/audio_helper.h"
+#include "input/button_input.h"
 
 namespace {
 constexpr int16_t GROUND_HEIGHT = 18;

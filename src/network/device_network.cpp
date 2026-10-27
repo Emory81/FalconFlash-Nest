@@ -1,4 +1,4 @@
-#include "device_network.h"
+#include "network/device_network.h"
 
 #include <Arduino.h>
 #include <HTTPClient.h>

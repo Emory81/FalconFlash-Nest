@@ -2,6 +2,7 @@
 
 #include <Arduino.h>
 
+#include <cmath>
 #include <cstdio>
 
 #include "audio_helper.h"
@@ -21,6 +22,12 @@ constexpr int16_t BIRD_BODY_HALF_H = 8;
 constexpr int16_t BIRD_BODY_OFFSET_X = 0;
 constexpr int16_t BIRD_BODY_OFFSET_Y = 0;
 constexpr bool SHOW_HITBOX = false;
+// Milliseconds each wing frame is shown; lower is a faster flap.
+// Nose-up/down tilt is limited to this angle (degrees).
+constexpr float MAX_TILT_DEGREES = 35.0f;
+// Fraction of the true travel angle to show (1.0 = exact).
+constexpr float TILT_SCALE = 0.6f;
+constexpr uint32_t FLAP_FRAME_MS = 110;
 constexpr float GRAVITY = 0.24f;
 constexpr float FLAP_VELOCITY = -4.8f;
 constexpr float PIPE_SPEED = 2.6f;
@@ -58,34 +65,45 @@ void drawBackButton(TFT_eSPI& display) {
                      BACK_BUTTON_Y + BACK_BUTTON_H / 2);
 }
 
-// Wing frame follows the bird's vertical speed: open just after a flap,
-// closed while falling.
-const uint16_t* birdFrame(float birdVelocity) {
-  if (birdVelocity < -2.0f) {
-    return birdFlapOpen;
-  }
-  if (birdVelocity < 1.5f) {
-    return birdFlapTransition;
-  }
-  return birdFlapClosed;
+// One flap per button press: transition, open, transition, then rest with wings back.
+const uint16_t* birdFrame(uint32_t flapStartedAt) {
+  const uint16_t* const flap[] = {birdFlapTransition, birdFlapOpen,
+                                  birdFlapTransition};
+  const uint32_t step = (millis() - flapStartedAt) / FLAP_FRAME_MS;
+  return step < 3 ? flap[step] : birdWingsBack;
 }
 
 // TFT_eSprite has no transparent pushImage(), so skip see-through pixels by
 // hand. drawPixel() is virtual, so this works on the sprite and the screen.
-void drawSprite(TFT_eSPI& display, int16_t x, int16_t y, int16_t w, int16_t h,
-                const uint16_t* pixels) {
-  for (int16_t row = 0; row < h; ++row) {
-    for (int16_t col = 0; col < w; ++col) {
-      const uint16_t color = pixels[row * w + col];
+// The art faces right; tilt is clockwise on screen (nose down when positive),
+// centered on (centerX, centerY), sampled nearest-neighbor.
+void drawSpriteRotated(TFT_eSPI& display, int16_t centerX, int16_t centerY,
+                       int16_t w, int16_t h, const uint16_t* pixels,
+                       float tiltRadians) {
+  const float cosT = cosf(tiltRadians);
+  const float sinT = sinf(tiltRadians);
+  const float srcCenterX = (w - 1) / 2.0f;
+  const float srcCenterY = (h - 1) / 2.0f;
+  const int16_t radius = static_cast<int16_t>(sqrtf(w * w + h * h) / 2.0f) + 1;
+
+  for (int16_t dy = -radius; dy <= radius; ++dy) {
+    for (int16_t dx = -radius; dx <= radius; ++dx) {
+      const int16_t sx = lroundf(srcCenterX + dx * cosT + dy * sinT);
+      const int16_t sy = lroundf(srcCenterY - dx * sinT + dy * cosT);
+      if (sx < 0 || sx >= w || sy < 0 || sy >= h) {
+        continue;
+      }
+      const uint16_t color = pixels[sy * w + sx];
       if (color != SPRITE_TRANSPARENT) {
-        display.drawPixel(x + col, y + row, color);
+        display.drawPixel(centerX + dx, centerY + dy, color);
       }
     }
   }
 }
 
-void drawFrame(TFT_eSPI& display, float birdY, float birdVelocity, int16_t pipeX,
-               int16_t gapTop, uint16_t score) {
+void drawFrame(TFT_eSPI& display, float birdY, float birdVelocity,
+               int16_t pipeX, int16_t gapTop, uint16_t score,
+               uint32_t flapStartedAt) {
   const int16_t screenW = display.width();
   const int16_t screenH = display.height();
   const int16_t gapBottom = gapTop + GAP_HEIGHT;
@@ -100,10 +118,14 @@ void drawFrame(TFT_eSPI& display, float birdY, float birdVelocity, int16_t pipeX
   display.drawRect(pipeX, gapBottom, PIPE_WIDTH,
                    screenH - GROUND_HEIGHT - gapBottom, TFT_DARKGREEN);
 
-  drawSprite(display, BIRD_X - BIRD_FLAP_OPEN_WIDTH / 2,
-             static_cast<int16_t>(birdY) - BIRD_FLAP_OPEN_HEIGHT / 2,
-             BIRD_FLAP_OPEN_WIDTH, BIRD_FLAP_OPEN_HEIGHT,
-             birdFrame(birdVelocity));
+  // Direction of travel: pipes approach at PIPE_SPEED while the bird moves
+  // vertically at birdVelocity.
+  float tilt = atan2f(birdVelocity, PIPE_SPEED) * TILT_SCALE;
+  const float maxTilt = MAX_TILT_DEGREES * static_cast<float>(M_PI) / 180.0f;
+  tilt = tilt > maxTilt ? maxTilt : (tilt < -maxTilt ? -maxTilt : tilt);
+  drawSpriteRotated(display, BIRD_X, static_cast<int16_t>(birdY),
+                    BIRD_FLAP_OPEN_WIDTH, BIRD_FLAP_OPEN_HEIGHT,
+                    birdFrame(flapStartedAt), tilt);
   if (SHOW_HITBOX) {
     display.drawRect(
         BIRD_X + BIRD_BODY_OFFSET_X - BIRD_BODY_HALF_W,
@@ -158,6 +180,7 @@ void runFlappyBird(TFT_eSPI& display) {
     uint16_t score = 0;
     bool pipeScored = false;
     uint32_t lastFrame = millis();
+    uint32_t flapStartedAt = lastFrame - 10 * FLAP_FRAME_MS;  // start at rest
 
     while (true) {
       const uint32_t now = millis();
@@ -176,6 +199,7 @@ void runFlappyBird(TFT_eSPI& display) {
       }
       if (button == Button::Button1) {
         birdVelocity = FLAP_VELOCITY;
+        flapStartedAt = now;
         playFlapSound();
       }
 
@@ -209,11 +233,11 @@ void runFlappyBird(TFT_eSPI& display) {
 
       if (useSprite) {
         drawFrame(gameFrame, birdY, birdVelocity, static_cast<int16_t>(pipeX),
-                  gapTop, score);
+                  gapTop, score, flapStartedAt);
         gameFrame.pushSprite(0, 0);
       } else {
         drawFrame(display, birdY, birdVelocity, static_cast<int16_t>(pipeX),
-                  gapTop, score);
+                  gapTop, score, flapStartedAt);
       }
     }
 

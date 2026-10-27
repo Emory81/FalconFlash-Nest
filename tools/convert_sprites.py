@@ -16,6 +16,7 @@ TRANSPARENT = 0xF81F
 # (C++ name, source PNG)
 SPRITES = [
     ("birdFlapClosed", ROOT / "include" / "art" / "FlashyBirdClosedFlap.png"),
+    ("birdWingsBack", ROOT / "include" / "art" / "FlashyBirdWingsBack.png"),
     ("birdFlapTransition", ROOT / "include" / "art" / "FlashyBirdTransitionFlap.png"),
     ("birdFlapOpen", ROOT / "include" / "art" / "FlashyBirdOpenFlap.png"),
 ]

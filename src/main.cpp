@@ -52,6 +52,8 @@ constexpr int16_t GAME_BUTTON_H = 25;
 constexpr uint8_t DELIVERY_SOUND_REPEATS = 3;
 constexpr uint32_t DELIVERY_SOUND_GAP_MS = 1000;
 constexpr uint32_t POST_DELIVERY_STANDBY_MS = 15000;
+constexpr uint8_t PRICE_FETCH_RETRIES = 3;
+constexpr uint32_t PRICE_FETCH_RETRY_DELAY_MS = 500;
 
 TFT_eSPI tft;
 
@@ -93,9 +95,23 @@ void drawPriceUnavailable() {
   tft.setTextSize(2);
   tft.setTextColor(TFT_WHITE, TFT_BLACK);
   tft.setTextDatum(MC_DATUM);
-  tft.drawString("Price unavailable", tft.width() / 2, 92);
+  tft.drawString("Price request failed", tft.width() / 2, 92);
   tft.setTextSize(1);
-  tft.drawString("Device is not armed", tft.width() / 2, 132);
+  tft.drawString("Check network or device status", tft.width() / 2, 132);
+}
+
+DevicePriceStatus fetchPriceWithRetry(uint8_t buttonNumber,
+                                      String& priceText) {
+  DevicePriceStatus status = DevicePriceStatus::Unavailable;
+  for (uint8_t attempt = 0; attempt < PRICE_FETCH_RETRIES; ++attempt) {
+    status = fetchDevicePrice(buttonNumber, priceText);
+    if (status != DevicePriceStatus::Unavailable ||
+        attempt + 1 >= PRICE_FETCH_RETRIES) {
+      return status;
+    }
+    delay(PRICE_FETCH_RETRY_DELAY_MS);
+  }
+  return status;
 }
 
 void drawFullTimerRing(int16_t centerX, int16_t centerY) {
@@ -699,11 +715,11 @@ void setup() {
   String priceText;
   const uint8_t orderButtonNumber = static_cast<uint8_t>(wakeButton);
   DevicePriceStatus priceStatus =
-      fetchDevicePrice(orderButtonNumber, priceText);
+      fetchPriceWithRetry(orderButtonNumber, priceText);
   if (priceStatus == DevicePriceStatus::NeedsPairing) {
     // The server rejected the saved token, so pair this device again.
     ensureDevicePaired(tft);
-    priceStatus = fetchDevicePrice(orderButtonNumber, priceText);
+    priceStatus = fetchPriceWithRetry(orderButtonNumber, priceText);
   }
   if (priceStatus != DevicePriceStatus::Success) {
     drawPriceUnavailable();

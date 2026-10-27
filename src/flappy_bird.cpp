@@ -17,8 +17,8 @@ constexpr int16_t BIRD_X = 58;
 // Hit detection uses only the body: a box centered on the bird's position,
 // independent of the sprite size, so wings can stick out without colliding.
 // Tune these to match the body in the art; set SHOW_HITBOX to see the box.
-constexpr int16_t BIRD_BODY_HALF_W = 8;
-constexpr int16_t BIRD_BODY_HALF_H = 8;
+constexpr int16_t BIRD_BODY_HALF_W = 6;
+constexpr int16_t BIRD_BODY_HALF_H = 6;
 constexpr int16_t BIRD_BODY_OFFSET_X = 0;
 constexpr int16_t BIRD_BODY_OFFSET_Y = 0;
 constexpr bool SHOW_HITBOX = false;
@@ -65,10 +65,11 @@ void drawBackButton(TFT_eSPI& display) {
                      BACK_BUTTON_Y + BACK_BUTTON_H / 2);
 }
 
-// One flap per button press: transition, open, transition, then rest with wings back.
+// One flap per button press: open, transition, closed, then back to the
+// default wings-back pose.
 const uint16_t* birdFrame(uint32_t flapStartedAt) {
-  const uint16_t* const flap[] = {birdFlapTransition, birdFlapOpen,
-                                  birdFlapTransition};
+  const uint16_t* const flap[] = {birdFlapOpen, birdFlapTransition,
+                                  birdFlapClosed};
   const uint32_t step = (millis() - flapStartedAt) / FLAP_FRAME_MS;
   return step < 3 ? flap[step] : birdWingsBack;
 }

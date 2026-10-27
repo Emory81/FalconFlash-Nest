@@ -22,7 +22,6 @@ constexpr uint8_t BACKLIGHT_PIN = 21;
 constexpr uint8_t BUTTON_WAKE_PIN = 35;
 constexpr bool GAME_MODE_ONLY = FALCON_GAME_MODE_ONLY != 0;
 constexpr int16_t LOGO_TEXT_GAP = 4;
-constexpr uint32_t SPLASH_DURATION_MS = 2000;
 constexpr uint32_t COUNTDOWN_DURATION_MS = 15000;
 constexpr int16_t TIMER_MAX_RADIUS = 52;
 constexpr int16_t TIMER_RING_THICKNESS = 6;
@@ -148,15 +147,19 @@ void drawCancelHint(int16_t centerX) {
 }
 
 bool detectDemoMode() {
-  const uint32_t startedAt = millis();
-  while (millis() - startedAt < SPLASH_DURATION_MS) {
-    if (readButtonEvent() == Button::Button2) {
+  // Keep the logo visible while Wi-Fi is starting. BTN2 can request demo
+  // mode at any point during this splash phase instead of within a timer.
+  while (true) {
+    const Button button = readButtonEvent();
+    if (button == Button::Button2) {
       waitForButtonRelease();
       return true;
     }
+    if (deviceWiFiConnected()) {
+      return false;
+    }
     delay(10);
   }
-  return false;
 }
 
 void drawOrderFailure() {
@@ -679,8 +682,8 @@ void setup() {
 
   drawSplashScreen();
   digitalWrite(BACKLIGHT_PIN, HIGH);
-  playBootSound();
   const bool demoMode = detectDemoMode();
+  playBootSound();
   if (GAME_MODE_ONLY) {
     showGameMenu(tft, true);
     enterStandby(true);

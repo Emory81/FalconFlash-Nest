@@ -11,6 +11,8 @@ namespace {
 constexpr char WIFI_SSID[] = "Messiah Guest";
 constexpr char WIFI_PASSWORD[] = "";
 constexpr char BASE_URL[] = "https://falconflash.emory.work/api";
+constexpr char WIFI_CHANNEL_KEY[] = "wifi_channel";
+constexpr char WIFI_BSSID_KEY[] = "wifi_bssid";
 #ifndef FALCON_FACTORY_ID
 #error "FALCON_FACTORY_ID must be set in .env"
 #endif
@@ -154,8 +156,37 @@ bool jsonValueIsTrue(const String& json, const char* key) {
   return json.indexOf("true", colon + 1) >= 0;
 }
 
+bool loadWiFiHint(uint8_t& channel, uint8_t* bssid) {
+  Preferences preferences;
+  preferences.begin("falcon", true);
+  channel = preferences.getUChar(WIFI_CHANNEL_KEY, 0);
+  const size_t bytesRead =
+      preferences.getBytes(WIFI_BSSID_KEY, bssid, 6);
+  preferences.end();
+  return channel > 0 && bytesRead == 6;
+}
+
+void saveWiFiHint() {
+  if (WiFi.status() != WL_CONNECTED || WiFi.channel() <= 0) {
+    return;
+  }
+
+  const uint8_t* bssid = WiFi.BSSID();
+  if (bssid == nullptr) {
+    return;
+  }
+
+  Preferences preferences;
+  preferences.begin("falcon", false);
+  preferences.putUChar(WIFI_CHANNEL_KEY,
+                       static_cast<uint8_t>(WiFi.channel()));
+  preferences.putBytes(WIFI_BSSID_KEY, bssid, 6);
+  preferences.end();
+}
+
 bool connectToWiFi() {
   if (WiFi.status() == WL_CONNECTED) {
+    saveWiFiHint();
     return true;
   }
 
@@ -174,6 +205,7 @@ bool connectToWiFi() {
     }
     delay(250);
   }
+  saveWiFiHint();
   return true;
 }
 
@@ -264,8 +296,20 @@ void startDeviceWiFi() {
     return;
   }
   WiFi.mode(WIFI_STA);
-  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+  WiFi.setAutoReconnect(true);
+
+  uint8_t cachedChannel = 0;
+  uint8_t cachedBssid[6] = {};
+  if (loadWiFiHint(cachedChannel, cachedBssid)) {
+    WiFi.begin(WIFI_SSID, WIFI_PASSWORD, cachedChannel, cachedBssid, true);
+  } else {
+    WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+  }
   wifiStarted = true;
+}
+
+bool deviceWiFiConnected() {
+  return WiFi.status() == WL_CONNECTED;
 }
 
 bool ensureDevicePaired(TFT_eSPI& display) {

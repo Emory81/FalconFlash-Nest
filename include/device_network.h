@@ -6,6 +6,7 @@
 #include <TFT_eSPI.h>
 
 void startDeviceWiFi();
+bool deviceWiFiConnected();
 bool ensureDevicePaired(TFT_eSPI& display);
 enum class DevicePriceStatus : uint8_t {
   Success,

@@ -13,6 +13,14 @@ constexpr int16_t GROUND_HEIGHT = 18;
 constexpr int16_t PIPE_WIDTH = 28;
 constexpr int16_t GAP_HEIGHT = 76;
 constexpr int16_t BIRD_X = 58;
+// Hit detection uses only the body: a box centered on the bird's position,
+// independent of the sprite size, so wings can stick out without colliding.
+// Tune these to match the body in the art; set SHOW_HITBOX to see the box.
+constexpr int16_t BIRD_BODY_HALF_W = 8;
+constexpr int16_t BIRD_BODY_HALF_H = 8;
+constexpr int16_t BIRD_BODY_OFFSET_X = 0;
+constexpr int16_t BIRD_BODY_OFFSET_Y = 0;
+constexpr bool SHOW_HITBOX = false;
 constexpr float GRAVITY = 0.24f;
 constexpr float FLAP_VELOCITY = -4.8f;
 constexpr float PIPE_SPEED = 2.6f;
@@ -96,6 +104,12 @@ void drawFrame(TFT_eSPI& display, float birdY, float birdVelocity, int16_t pipeX
              static_cast<int16_t>(birdY) - BIRD_FLAP_OPEN_HEIGHT / 2,
              BIRD_FLAP_OPEN_WIDTH, BIRD_FLAP_OPEN_HEIGHT,
              birdFrame(birdVelocity));
+  if (SHOW_HITBOX) {
+    display.drawRect(
+        BIRD_X + BIRD_BODY_OFFSET_X - BIRD_BODY_HALF_W,
+        static_cast<int16_t>(birdY) + BIRD_BODY_OFFSET_Y - BIRD_BODY_HALF_H,
+        BIRD_BODY_HALF_W * 2, BIRD_BODY_HALF_H * 2, TFT_RED);
+  }
 
   display.setTextFont(1);
   display.setTextSize(2);
@@ -181,12 +195,14 @@ void runFlappyBird(TFT_eSPI& display) {
       }
 
       const int16_t gapBottom = gapTop + GAP_HEIGHT;
+      const float bodyLeft = BIRD_X + BIRD_BODY_OFFSET_X - BIRD_BODY_HALF_W;
+      const float bodyRight = BIRD_X + BIRD_BODY_OFFSET_X + BIRD_BODY_HALF_W;
+      const float bodyTop = birdY + BIRD_BODY_OFFSET_Y - BIRD_BODY_HALF_H;
+      const float bodyBottom = birdY + BIRD_BODY_OFFSET_Y + BIRD_BODY_HALF_H;
       const bool outsideScreen =
-          birdY - 10 < 0 || birdY + 10 >= screenH - GROUND_HEIGHT;
-      const bool inPipeX =
-          BIRD_X + 10 > pipeX && BIRD_X - 10 < pipeX + PIPE_WIDTH;
-      const bool hitPipe =
-          inPipeX && (birdY - 10 < gapTop || birdY + 10 > gapBottom);
+          bodyTop < 0 || bodyBottom >= screenH - GROUND_HEIGHT;
+      const bool inPipeX = bodyRight > pipeX && bodyLeft < pipeX + PIPE_WIDTH;
+      const bool hitPipe = inPipeX && (bodyTop < gapTop || bodyBottom > gapBottom);
       if (outsideScreen || hitPipe) {
         break;
       }

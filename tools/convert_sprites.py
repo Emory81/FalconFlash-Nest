@@ -19,7 +19,11 @@ SPRITES = [
     ("birdWingsBack", ROOT / "include" / "art" / "FlashyBirdWingsBack.png"),
     ("birdFlapTransition", ROOT / "include" / "art" / "FlashyBirdTransitionFlap.png"),
     ("birdFlapOpen", ROOT / "include" / "art" / "FlashyBirdOpenFlap.png"),
+    ("pipeBody", ROOT / "include" / "art" / "PipeBody.png"),
+    ("pipeCap", ROOT / "include" / "art" / "PipeCap.png"),
 ]
+
+BACKGROUND = ROOT / "include" / "art" / "FreyDrawingBackground.png"
 
 
 def rgb_to_rgb565(r: int, g: int, b: int) -> int:
@@ -34,6 +38,54 @@ def convert(path: Path) -> tuple[int, int, list[int]]:
             r, g, b, a = image.getpixel((x, y))
             pixels.append(TRANSPARENT if a < 128 else rgb_to_rgb565(r, g, b))
     return image.width, image.height, pixels
+
+
+# The display runs in landscape (setRotation), so games see 320 x 240.
+SCREEN_WIDTH = 320
+SCREEN_HEIGHT = 240
+
+
+def cover_resize(image: Image.Image, width: int, height: int) -> Image.Image:
+    """Scale to fill width x height (keeping aspect ratio), cropping the
+    overflow from the center."""
+    scale = max(width / image.width, height / image.height)
+    resized = image.resize(
+        (max(width, round(image.width * scale)),
+         max(height, round(image.height * scale))),
+        Image.Resampling.LANCZOS)
+    left = (resized.width - width) // 2
+    top = (resized.height - height) // 2
+    return resized.crop((left, top, left + width, top + height))
+
+
+def convert_background(path: Path) -> tuple[int, int, list[int]]:
+    """Fit the image to the screen and convert it to RGB332 (dithering only photos),
+    the 8-bit sprite's native format (r:3 g:3 b:2), so the game can copy it
+    straight into its frame buffer."""
+    image = cover_resize(Image.open(path).convert("RGB"),
+                         SCREEN_WIDTH, SCREEN_HEIGHT)
+    width, height = image.size
+    buf = [[list(map(float, image.getpixel((x, y)))) for x in range(width)]
+           for y in range(height)]
+    levels = (7, 7, 3)
+    # Flat-color drawings look best snapped to the nearest color; dithering
+    # only helps photos with many colors.
+    dither = len(set(image.getdata())) > 256
+    pixels: list[int] = []
+    for y in range(height):
+        for x in range(width):
+            old = [max(0.0, min(255.0, c)) for c in buf[y][x]]
+            q = [round(old[i] / 255 * levels[i]) for i in range(3)]
+            pixels.append((q[0] << 5) | (q[1] << 2) | q[2])
+            if not dither:
+                continue
+            err = [old[i] - q[i] * 255 / levels[i] for i in range(3)]
+            for dx, dy, weight in ((1, 0, 7), (-1, 1, 3), (0, 1, 5), (1, 1, 1)):
+                nx, ny = x + dx, y + dy
+                if 0 <= nx < width and ny < height:
+                    for i in range(3):
+                        buf[ny][nx][i] += err[i] * weight / 16
+    return width, height, pixels
 
 
 def main() -> None:
@@ -63,6 +115,19 @@ def main() -> None:
         lines.append("};")
         lines.append("")
         print(f"{path.name}: {width}x{height}")
+
+    width, height, pixels = convert_background(BACKGROUND)
+    lines.append(f"constexpr uint16_t BACKGROUND_WIDTH = {width};")
+    lines.append(f"constexpr uint16_t BACKGROUND_HEIGHT = {height};")
+    lines.append("// RGB332, row-major: one byte per pixel.")
+    lines.append("constexpr uint8_t backgroundImage[] PROGMEM = {")
+    for start in range(0, len(pixels), 16):
+        chunk = pixels[start:start + 16]
+        suffix = "," if start + 16 < len(pixels) else ""
+        lines.append("  " + ", ".join(f"0x{v:02X}" for v in chunk) + suffix)
+    lines.append("};")
+    lines.append("")
+    print(f"{BACKGROUND.name}: {width}x{height}")
 
     OUT.write_text("\n".join(lines), encoding="utf-8")
     print(f"Wrote {OUT}")

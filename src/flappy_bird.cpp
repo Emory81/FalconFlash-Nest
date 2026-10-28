@@ -4,14 +4,19 @@
 
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 
 #include "audio_helper.h"
 #include "button_input.h"
 #include "flappy_sprites.h"
 
 namespace {
-constexpr int16_t GROUND_HEIGHT = 18;
-constexpr int16_t PIPE_WIDTH = 28;
+// The background image fills the whole screen, so there is no ground strip.
+constexpr int16_t GROUND_HEIGHT = 0;
+// Pipe = stem (PipeBody art, repeated) + a slightly wider cap (PipeCap art)
+// on the open end, so the stem width and cap overhang come from the art.
+constexpr int16_t PIPE_WIDTH = PIPE_BODY_WIDTH;
+constexpr int16_t PIPE_CAP_OVERHANG = (PIPE_CAP_WIDTH - PIPE_BODY_WIDTH) / 2;
 constexpr int16_t GAP_HEIGHT = 76;
 constexpr int16_t BIRD_X = 58;
 // Hit detection uses only the body: a box centered on the bird's position,
@@ -22,11 +27,11 @@ constexpr int16_t BIRD_BODY_HALF_H = 6;
 constexpr int16_t BIRD_BODY_OFFSET_X = 0;
 constexpr int16_t BIRD_BODY_OFFSET_Y = 0;
 constexpr bool SHOW_HITBOX = false;
-// Milliseconds each wing frame is shown; lower is a faster flap.
 // Nose-up/down tilt is limited to this angle (degrees).
 constexpr float MAX_TILT_DEGREES = 35.0f;
 // Fraction of the true travel angle to show (1.0 = exact).
 constexpr float TILT_SCALE = 0.6f;
+// Milliseconds each wing frame is shown; lower is a faster flap.
 constexpr uint32_t FLAP_FRAME_MS = 110;
 constexpr float GRAVITY = 0.24f;
 constexpr float FLAP_VELOCITY = -4.8f;
@@ -102,22 +107,80 @@ void drawSpriteRotated(TFT_eSPI& display, int16_t centerX, int16_t centerY,
   }
 }
 
+// Full-screen background. backgroundImage is RGB332, the same layout as the
+// 8-bit sprite's buffer, so the sprite path is a single memcpy. Without a
+// sprite it goes straight to the screen.
+void drawBackground(TFT_eSPI& display, TFT_eSprite* sprite) {
+  // The image must match the screen exactly (re-run tools/convert_sprites.py
+  // if the display size changes); otherwise rows would be misaligned.
+  if (display.width() != BACKGROUND_WIDTH ||
+      display.height() != BACKGROUND_HEIGHT) {
+    TFT_eSPI& canvas = sprite != nullptr ? *sprite : display;
+    canvas.fillRect(0, 0, display.width(), display.height(), TFT_BLACK);
+    return;
+  }
+  if (sprite != nullptr) {
+    memcpy(sprite->getPointer(), backgroundImage, sizeof(backgroundImage));
+  } else {
+    display.pushImage(0, 0, BACKGROUND_WIDTH, BACKGROUND_HEIGHT,
+                      const_cast<uint8_t*>(backgroundImage), true);
+  }
+}
+
+// Draws an opaque/transparent image with clipping, optionally flipped
+// vertically (for the cap of the pipe hanging from the top).
+void drawImage(TFT_eSPI& display, int16_t x, int16_t y, int16_t w, int16_t h,
+               const uint16_t* pixels, bool flipVertical) {
+  for (int16_t row = 0; row < h; ++row) {
+    const int16_t dy = y + row;
+    if (dy < 0 || dy >= display.height()) {
+      continue;
+    }
+    const int16_t srcRow = flipVertical ? h - 1 - row : row;
+    for (int16_t col = 0; col < w; ++col) {
+      const int16_t dx = x + col;
+      if (dx < 0 || dx >= display.width()) {
+        continue;
+      }
+      const uint16_t color = pixels[srcRow * w + col];
+      if (color != SPRITE_TRANSPARENT) {
+        display.drawPixel(dx, dy, color);
+      }
+    }
+  }
+}
+
+// Stem rows [fromY, toY) from the repeating body art, then the cap.
+void drawPipe(TFT_eSPI& display, int16_t pipeX, int16_t gapTop,
+              int16_t gapBottom) {
+  const int16_t screenH = display.height();
+  const int16_t capX = pipeX - PIPE_CAP_OVERHANG;
+
+  // Top pipe: stem from the ceiling down to its cap.
+  for (int16_t y = 0; y < gapTop - PIPE_CAP_HEIGHT; y += PIPE_BODY_HEIGHT) {
+    const int16_t h = min<int16_t>(PIPE_BODY_HEIGHT, gapTop - PIPE_CAP_HEIGHT - y);
+    drawImage(display, pipeX, y, PIPE_BODY_WIDTH, h, pipeBody, false);
+  }
+  drawImage(display, capX, gapTop - PIPE_CAP_HEIGHT, PIPE_CAP_WIDTH,
+            PIPE_CAP_HEIGHT, pipeCap, true);
+
+  // Bottom pipe: cap at the gap edge, stem below it to the bottom of the screen.
+  drawImage(display, capX, gapBottom, PIPE_CAP_WIDTH, PIPE_CAP_HEIGHT, pipeCap,
+            false);
+  for (int16_t y = gapBottom + PIPE_CAP_HEIGHT; y < screenH;
+       y += PIPE_BODY_HEIGHT) {
+    drawImage(display, pipeX, y, PIPE_BODY_WIDTH, PIPE_BODY_HEIGHT, pipeBody,
+              false);
+  }
+}
+
 void drawFrame(TFT_eSPI& display, float birdY, float birdVelocity,
                int16_t pipeX, int16_t gapTop, uint16_t score,
                uint32_t flapStartedAt) {
-  const int16_t screenW = display.width();
   const int16_t screenH = display.height();
   const int16_t gapBottom = gapTop + GAP_HEIGHT;
 
-  display.fillRect(0, 0, screenW, screenH, TFT_SKYBLUE);
-  display.fillRect(0, screenH - GROUND_HEIGHT, screenW, GROUND_HEIGHT,
-                   TFT_DARKGREEN);
-  display.fillRect(pipeX, 0, PIPE_WIDTH, gapTop, TFT_GREEN);
-  display.fillRect(pipeX, gapBottom, PIPE_WIDTH,
-                   screenH - GROUND_HEIGHT - gapBottom, TFT_GREEN);
-  display.drawRect(pipeX, 0, PIPE_WIDTH, gapTop, TFT_DARKGREEN);
-  display.drawRect(pipeX, gapBottom, PIPE_WIDTH,
-                   screenH - GROUND_HEIGHT - gapBottom, TFT_DARKGREEN);
+  drawPipe(display, pipeX, gapTop, gapBottom);
 
   // Direction of travel: pipes approach at PIPE_SPEED while the bird moves
   // vertically at birdVelocity.
@@ -136,7 +199,7 @@ void drawFrame(TFT_eSPI& display, float birdY, float birdVelocity,
 
   display.setTextFont(1);
   display.setTextSize(2);
-  display.setTextColor(TFT_WHITE, TFT_SKYBLUE);
+  display.setTextColor(TFT_WHITE);
   display.setTextDatum(TL_DATUM);
   char scoreText[16];
   snprintf(scoreText, sizeof(scoreText), "Score: %u", score);
@@ -147,10 +210,9 @@ void drawFrame(TFT_eSPI& display, float birdY, float birdVelocity,
 void drawGameOver(TFT_eSPI& display) {
   const int16_t screenW = display.width();
   const int16_t screenH = display.height();
-  display.fillRect(0, 0, screenW, screenH, TFT_SKYBLUE);
   display.setTextFont(1);
   display.setTextSize(2);
-  display.setTextColor(TFT_WHITE, TFT_SKYBLUE);
+  display.setTextColor(TFT_WHITE);
   display.setTextDatum(MC_DATUM);
   display.drawString("Game Over", screenW / 2, screenH / 2 - 18);
   display.setTextFont(1);
@@ -172,6 +234,7 @@ void runFlappyBird(TFT_eSPI& display) {
   gameFrame.setColorDepth(8);
   gameFrame.createSprite(screenW, screenH);
   const bool useSprite = gameFrame.created();
+  TFT_eSprite* const sprite = useSprite ? &gameFrame : nullptr;
 
   while (true) {
     float birdY = screenH / 2.0f;
@@ -227,11 +290,20 @@ void runFlappyBird(TFT_eSPI& display) {
       const bool outsideScreen =
           bodyTop < 0 || bodyBottom >= screenH - GROUND_HEIGHT;
       const bool inPipeX = bodyRight > pipeX && bodyLeft < pipeX + PIPE_WIDTH;
-      const bool hitPipe = inPipeX && (bodyTop < gapTop || bodyBottom > gapBottom);
+      // The cap sticks out past the stem, so it is checked over its own rows.
+      const bool inCapX = bodyRight > pipeX - PIPE_CAP_OVERHANG &&
+                          bodyLeft < pipeX + PIPE_WIDTH + PIPE_CAP_OVERHANG;
+      const bool hitCap =
+          inCapX && ((bodyTop < gapTop && bodyBottom > gapTop - PIPE_CAP_HEIGHT) ||
+                     (bodyBottom > gapBottom &&
+                      bodyTop < gapBottom + PIPE_CAP_HEIGHT));
+      const bool hitPipe =
+          hitCap || (inPipeX && (bodyTop < gapTop || bodyBottom > gapBottom));
       if (outsideScreen || hitPipe) {
         break;
       }
 
+      drawBackground(display, sprite);
       if (useSprite) {
         drawFrame(gameFrame, birdY, birdVelocity, static_cast<int16_t>(pipeX),
                   gapTop, score, flapStartedAt);
@@ -242,6 +314,7 @@ void runFlappyBird(TFT_eSPI& display) {
       }
     }
 
+    drawBackground(display, sprite);
     if (useSprite) {
       drawGameOver(gameFrame);
       gameFrame.pushSprite(0, 0);

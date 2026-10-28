@@ -722,6 +722,7 @@ void setup() {
   digitalWrite(BACKLIGHT_PIN, HIGH);
   playBootSound();
   const bool demoMode = detectDemoMode();
+  checkForFirmwareUpdate();
   if (GAME_MODE_ONLY) {
     showGameMenu(tft, true);
     enterStandby(true);

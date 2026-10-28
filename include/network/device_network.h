@@ -7,6 +7,7 @@
 
 void startDeviceWiFi();
 bool deviceWiFiConnected();
+bool checkForFirmwareUpdate();
 bool ensureDevicePaired(TFT_eSPI& display);
 enum class DevicePriceStatus : uint8_t {
   Success,

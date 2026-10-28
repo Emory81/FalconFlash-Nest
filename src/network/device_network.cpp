@@ -3,6 +3,7 @@
 #include <Arduino.h>
 #include <HTTPClient.h>
 #include <Preferences.h>
+#include <Update.h>
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
 #include <esp_system.h>
@@ -19,8 +20,20 @@ constexpr char WIFI_BSSID_KEY[] = "wifi_bssid";
 #ifndef FALCON_FACTORY_SECRET
 #error "FALCON_FACTORY_SECRET must be set in .env"
 #endif
+#ifndef FALCON_FIRMWARE_VERSION
+#error "FALCON_FIRMWARE_VERSION must be set in .env"
+#endif
+#ifndef FALCON_GITHUB_REPO
+#error "FALCON_GITHUB_REPO must be set in .env"
+#endif
+#ifndef FALCON_FIRMWARE_ASSET
+#error "FALCON_FIRMWARE_ASSET must be set in .env"
+#endif
 constexpr char FACTORY_ID[] = FALCON_FACTORY_ID;
 constexpr char FACTORY_SECRET[] = FALCON_FACTORY_SECRET;
+constexpr char FIRMWARE_VERSION[] = FALCON_FIRMWARE_VERSION;
+constexpr char GITHUB_REPO[] = FALCON_GITHUB_REPO;
+constexpr char FIRMWARE_ASSET[] = FALCON_FIRMWARE_ASSET;
 constexpr char PAIRING_CODE_PATH[] = "/nest/device/pairing-code";
 constexpr char PAIRING_STATUS_PATH[] = "/nest/device/pairing-status";
 constexpr char PRICE_PATH[] = "/nest/device/price";
@@ -244,6 +257,7 @@ int postJson(const char* path, const String& body, bool useFactoryHeaders,
     return -1;
   }
   http.setTimeout(10000);
+  http.addHeader("X-Firmware-Version", FIRMWARE_VERSION);
 
   if (useFactoryHeaders) {
     http.addHeader("X-Nest-Factory-Id", FACTORY_ID);
@@ -272,11 +286,193 @@ int getJson(const String& path, String& response) {
     return -1;
   }
   http.setTimeout(10000);
+  http.addHeader("X-Firmware-Version", FIRMWARE_VERSION);
 
   const int status = http.GET();
   response = http.getString();
   http.end();
   return status;
+}
+
+int firmwareVersionPart(const String& version, uint8_t partIndex) {
+  String normalized = version;
+  normalized.trim();
+  if (normalized.startsWith("v") || normalized.startsWith("V")) {
+    normalized.remove(0, 1);
+  }
+
+  int partStart = 0;
+  for (uint8_t index = 0; index < partIndex; ++index) {
+    const int separator = normalized.indexOf('.', partStart);
+    if (separator < 0) {
+      return 0;
+    }
+    partStart = separator + 1;
+  }
+
+  int partEnd = normalized.indexOf('.', partStart);
+  if (partEnd < 0) {
+    partEnd = normalized.length();
+  }
+  if (partEnd <= partStart) {
+    return 0;
+  }
+  return normalized.substring(partStart, partEnd).toInt();
+}
+
+bool isNewerFirmwareVersion(const String& candidateVersion) {
+  if (candidateVersion.length() == 0) {
+    return false;
+  }
+
+  for (uint8_t index = 0; index < 3; ++index) {
+    const int candidatePart = firmwareVersionPart(candidateVersion, index);
+    const int currentPart = firmwareVersionPart(FIRMWARE_VERSION, index);
+    if (candidatePart != currentPart) {
+      return candidatePart > currentPart;
+    }
+  }
+  return false;
+}
+
+bool installFirmwareUpdate(const String& firmwareUrl) {
+  WiFiClientSecure client;
+  client.setInsecure();
+
+  HTTPClient http;
+  if (!http.begin(client, firmwareUrl)) {
+    return false;
+  }
+  http.setTimeout(15000);
+  http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
+
+  const int status = http.GET();
+  if (status != HTTP_CODE_OK) {
+    http.end();
+    return false;
+  }
+
+  const int contentLength = http.getSize();
+  const size_t updateSize =
+      contentLength > 0 ? static_cast<size_t>(contentLength)
+                        : UPDATE_SIZE_UNKNOWN;
+  if (!Update.begin(updateSize)) {
+    http.end();
+    return false;
+  }
+
+  WiFiClient* stream = http.getStreamPtr();
+  const size_t written = stream == nullptr ? 0 : Update.writeStream(*stream);
+  const bool sizeMatches =
+      contentLength <= 0 || written == static_cast<size_t>(contentLength);
+  if (!sizeMatches || !Update.end()) {
+    Update.abort();
+    http.end();
+    return false;
+  }
+
+  http.end();
+  delay(250);
+  ESP.restart();
+  return true;
+}
+
+String githubRepositoryPath() {
+  String repository = GITHUB_REPO;
+  repository.trim();
+
+  const int githubHostStart = repository.indexOf("github.com/");
+  if (githubHostStart >= 0) {
+    repository = repository.substring(githubHostStart + 11);
+  }
+
+  while (repository.startsWith("/")) {
+    repository.remove(0, 1);
+  }
+  const int queryStart = repository.indexOf('?');
+  if (queryStart >= 0) {
+    repository.remove(queryStart);
+  }
+  const int fragmentStart = repository.indexOf('#');
+  if (fragmentStart >= 0) {
+    repository.remove(fragmentStart);
+  }
+  while (repository.endsWith("/")) {
+    repository.remove(repository.length() - 1);
+  }
+  if (repository.endsWith(".git")) {
+    repository.remove(repository.length() - 4);
+  }
+  return repository;
+}
+
+String findFirmwareAssetUrl(const String& releaseJson) {
+  const int assetsKeyStart = releaseJson.indexOf("\"assets\"");
+  if (assetsKeyStart < 0) {
+    return String();
+  }
+
+  int searchFrom = releaseJson.indexOf('[', assetsKeyStart);
+  while (searchFrom >= 0) {
+    const int objectStart = releaseJson.indexOf('{', searchFrom);
+    if (objectStart < 0) {
+      return String();
+    }
+    const int objectEnd = releaseJson.indexOf('}', objectStart);
+    if (objectEnd < 0) {
+      return String();
+    }
+
+    const String assetJson = releaseJson.substring(objectStart, objectEnd + 1);
+    const String assetName = extractJsonString(assetJson, "name");
+    if (assetName == FIRMWARE_ASSET) {
+      return extractJsonString(assetJson, "browser_download_url");
+    }
+    searchFrom = objectEnd + 1;
+  }
+  return String();
+}
+
+bool checkForFirmwareUpdateInternal() {
+  if (GITHUB_REPO[0] == '\0' || WiFi.status() != WL_CONNECTED) {
+    return false;
+  }
+
+  const String repository = githubRepositoryPath();
+  if (repository.length() == 0) {
+    return false;
+  }
+
+  WiFiClientSecure client;
+  client.setInsecure();
+
+  HTTPClient http;
+  const String latestReleaseUrl =
+      "https://api.github.com/repos/" + repository + "/releases/latest";
+  if (!http.begin(client, latestReleaseUrl)) {
+    return false;
+  }
+  http.setTimeout(10000);
+  http.addHeader("Accept", "application/vnd.github+json");
+  http.addHeader("User-Agent",
+                 String("FalconFlash-Nest/") + FIRMWARE_VERSION);
+
+  const int status = http.GET();
+  if (status != HTTP_CODE_OK) {
+    http.end();
+    return false;
+  }
+
+  const String releaseJson = http.getString();
+  http.end();
+
+  const String candidateVersion = extractJsonString(releaseJson, "tag_name");
+  const String firmwareUrl = findFirmwareAssetUrl(releaseJson);
+  if (!isNewerFirmwareVersion(candidateVersion) || firmwareUrl.length() == 0) {
+    return false;
+  }
+
+  return installFirmwareUpdate(firmwareUrl);
 }
 
 String loadDeviceToken() {
@@ -343,6 +539,10 @@ bool deviceWiFiConnected() {
     wifiAttemptStartedAt = millis();
   }
   return WiFi.status() == WL_CONNECTED;
+}
+
+bool checkForFirmwareUpdate() {
+  return checkForFirmwareUpdateInternal();
 }
 
 bool ensureDevicePaired(TFT_eSPI& display) {

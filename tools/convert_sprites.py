@@ -14,11 +14,14 @@ OUT = ROOT / "include" / "flappy_sprites.h"
 TRANSPARENT = 0xF81F
 
 # (C++ name, source PNG)
+# Bird art variant: "" for the original frames, "Alternate" for the alternates.
+BIRD_SET = "Alternate"
+
 SPRITES = [
-    ("birdFlapClosed", ROOT / "include" / "art" / "FlashyBirdClosedFlap.png"),
-    ("birdWingsBack", ROOT / "include" / "art" / "FlashyBirdWingsBack.png"),
-    ("birdFlapTransition", ROOT / "include" / "art" / "FlashyBirdTransitionFlap.png"),
-    ("birdFlapOpen", ROOT / "include" / "art" / "FlashyBirdOpenFlap.png"),
+    ("birdFlapClosed", ROOT / "include" / "art" / f"FlashyBirdClosedFlap{BIRD_SET}.png"),
+    ("birdWingsBack", ROOT / "include" / "art" / f"FlashyBirdWingsBack{BIRD_SET}.png"),
+    ("birdFlapTransition", ROOT / "include" / "art" / f"FlashyBirdTransitionFlap{BIRD_SET}.png"),
+    ("birdFlapOpen", ROOT / "include" / "art" / f"FlashyBirdOpenFlap{BIRD_SET}.png"),
     ("pipeBody", ROOT / "include" / "art" / "PipeBody.png"),
     ("pipeCap", ROOT / "include" / "art" / "PipeCap.png"),
 ]

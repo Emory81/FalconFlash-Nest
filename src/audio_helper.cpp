@@ -3,6 +3,9 @@
 #include <Arduino.h>
 
 namespace {
+// Temporarily silences every sound (boot, delivery, power-down, games).
+// Set to false to turn sound back on.
+constexpr bool AUDIO_MUTED = true;
 constexpr uint8_t SPEAKER_ENABLE_PIN = 4;
 constexpr uint8_t AUDIO_DAC_PIN = 26;
 constexpr uint8_t DAC_MIN = 0;
@@ -18,6 +21,10 @@ void audioBegin() {
 }
 
 void audioPlayTone(uint16_t frequency, uint16_t durationMs) {
+  if (AUDIO_MUTED) {
+    return;
+  }
+
   const uint32_t halfPeriodUs = 500000UL / frequency;
   const uint32_t cycles =
       (static_cast<uint32_t>(frequency) * durationMs) / 1000UL;

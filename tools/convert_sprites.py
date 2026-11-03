@@ -14,19 +14,23 @@ OUT = ROOT / "include" / "flappy_sprites.h"
 TRANSPARENT = 0xF81F
 
 # (C++ name, source PNG)
-# Bird art variant: "" for the original frames, "Alternate" for the alternates.
-BIRD_SET = "Alternate"
+# Bird art variant: "" for the original frames, "Alternate" or "Big" for the others.
+BIRD_SET = "Big"
+
+# Pipe art variant: "" for the green pipes, "Red" for the red ones.
+PIPE_SET = "Red"
 
 SPRITES = [
     ("birdFlapClosed", ROOT / "include" / "art" / f"FlashyBirdClosedFlap{BIRD_SET}.png"),
     ("birdWingsBack", ROOT / "include" / "art" / f"FlashyBirdWingsBack{BIRD_SET}.png"),
     ("birdFlapTransition", ROOT / "include" / "art" / f"FlashyBirdTransitionFlap{BIRD_SET}.png"),
     ("birdFlapOpen", ROOT / "include" / "art" / f"FlashyBirdOpenFlap{BIRD_SET}.png"),
-    ("pipeBody", ROOT / "include" / "art" / "PipeBody.png"),
-    ("pipeCap", ROOT / "include" / "art" / "PipeCap.png"),
+    ("pipeBody", ROOT / "include" / "art" / f"PipeBody{PIPE_SET}.png"),
+    ("pipeCap", ROOT / "include" / "art" / f"PipeCap{PIPE_SET}.png"),
 ]
 
 BACKGROUND = ROOT / "include" / "art" / "FreyDrawingBackground.png"
+BACKGROUND_NIGHT = ROOT / "include" / "art" / "FreyDrawingBackgroundNight.png"
 
 
 def rgb_to_rgb565(r: int, g: int, b: int) -> int:
@@ -119,18 +123,21 @@ def main() -> None:
         lines.append("")
         print(f"{path.name}: {width}x{height}")
 
-    width, height, pixels = convert_background(BACKGROUND)
-    lines.append(f"constexpr uint16_t BACKGROUND_WIDTH = {width};")
-    lines.append(f"constexpr uint16_t BACKGROUND_HEIGHT = {height};")
-    lines.append("// RGB332, row-major: one byte per pixel.")
-    lines.append("constexpr uint8_t backgroundImage[] PROGMEM = {")
-    for start in range(0, len(pixels), 16):
-        chunk = pixels[start:start + 16]
-        suffix = "," if start + 16 < len(pixels) else ""
-        lines.append("  " + ", ".join(f"0x{v:02X}" for v in chunk) + suffix)
-    lines.append("};")
-    lines.append("")
-    print(f"{BACKGROUND.name}: {width}x{height}")
+    for name, path in (("backgroundImage", BACKGROUND),
+                       ("backgroundNightImage", BACKGROUND_NIGHT)):
+        width, height, pixels = convert_background(path)
+        if name == "backgroundImage":
+            lines.append(f"constexpr uint16_t BACKGROUND_WIDTH = {width};")
+            lines.append(f"constexpr uint16_t BACKGROUND_HEIGHT = {height};")
+        lines.append("// RGB332, row-major: one byte per pixel (4-byte aligned).")
+        lines.append(f"alignas(4) constexpr uint8_t {name}[] PROGMEM = {{")
+        for start in range(0, len(pixels), 16):
+            chunk = pixels[start:start + 16]
+            suffix = "," if start + 16 < len(pixels) else ""
+            lines.append("  " + ", ".join(f"0x{v:02X}" for v in chunk) + suffix)
+        lines.append("};")
+        lines.append("")
+        print(f"{path.name}: {width}x{height}")
 
     OUT.write_text("\n".join(lines), encoding="utf-8")
     print(f"Wrote {OUT}")

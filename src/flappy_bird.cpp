@@ -36,6 +36,9 @@ constexpr uint32_t FLAP_FRAME_MS = 110;
 constexpr float GRAVITY = 0.24f;
 constexpr float FLAP_VELOCITY = -4.8f;
 constexpr float PIPE_SPEED = 2.6f;
+constexpr uint8_t PIPE_COUNT = 2;
+constexpr float PIPE_SPAWN_OFFSET = 20.0f;
+constexpr float PIPE_SPACING_SCALE = 0.5f;
 constexpr int16_t BACK_BUTTON_X = 8;
 constexpr int16_t BACK_BUTTON_Y = 208;
 constexpr int16_t BACK_BUTTON_W = 66;
@@ -175,12 +178,14 @@ void drawPipe(TFT_eSPI& display, int16_t pipeX, int16_t gapTop,
 }
 
 void drawFrame(TFT_eSPI& display, float birdY, float birdVelocity,
-               int16_t pipeX, int16_t gapTop, uint16_t score,
+               const float* pipeX, const int16_t* gapTop, uint16_t score,
                uint32_t flapStartedAt) {
   const int16_t screenH = display.height();
-  const int16_t gapBottom = gapTop + GAP_HEIGHT;
-
-  drawPipe(display, pipeX, gapTop, gapBottom);
+  for (uint8_t index = 0; index < PIPE_COUNT; ++index) {
+    const int16_t pipeGapBottom = gapTop[index] + GAP_HEIGHT;
+    drawPipe(display, static_cast<int16_t>(pipeX[index]), gapTop[index],
+             pipeGapBottom);
+  }
 
   // Direction of travel: pipes approach at PIPE_SPEED while the bird moves
   // vertically at birdVelocity.
@@ -239,10 +244,18 @@ void runFlappyBird(TFT_eSPI& display) {
   while (true) {
     float birdY = screenH / 2.0f;
     float birdVelocity = 0.0f;
-    float pipeX = screenW + 20.0f;
-    int16_t gapTop = random(35, screenH - GROUND_HEIGHT - GAP_HEIGHT - 20);
+    const float pipeSpacing =
+        (screenW + PIPE_SPAWN_OFFSET) * PIPE_SPACING_SCALE;
+    float pipeX[PIPE_COUNT];
+    int16_t gapTop[PIPE_COUNT];
+    bool pipeScored[PIPE_COUNT] = {};
+    for (uint8_t index = 0; index < PIPE_COUNT; ++index) {
+      pipeX[index] =
+          screenW + PIPE_SPAWN_OFFSET + index * pipeSpacing;
+      gapTop[index] =
+          random(35, screenH - GROUND_HEIGHT - GAP_HEIGHT - 20);
+    }
     uint16_t score = 0;
-    bool pipeScored = false;
     uint32_t lastFrame = millis();
     uint32_t flapStartedAt = lastFrame - 10 * FLAP_FRAME_MS;  // start at rest
 
@@ -269,48 +282,69 @@ void runFlappyBird(TFT_eSPI& display) {
 
       birdVelocity += GRAVITY;
       birdY += birdVelocity;
-      pipeX -= PIPE_SPEED;
+      for (uint8_t index = 0; index < PIPE_COUNT; ++index) {
+        pipeX[index] -= PIPE_SPEED;
 
-      if (!pipeScored && pipeX + PIPE_WIDTH < BIRD_X) {
-        ++score;
-        pipeScored = true;
-        playScoreSound();
-      }
-      if (pipeX + PIPE_WIDTH < 0) {
-        pipeX = screenW + 20.0f;
-        gapTop = random(35, screenH - GROUND_HEIGHT - GAP_HEIGHT - 20);
-        pipeScored = false;
+        if (!pipeScored[index] && pipeX[index] + PIPE_WIDTH < BIRD_X) {
+          ++score;
+          pipeScored[index] = true;
+          playScoreSound();
+        }
+        if (pipeX[index] + PIPE_WIDTH < 0) {
+          float furthestPipeX = pipeX[index];
+          for (uint8_t other = 0; other < PIPE_COUNT; ++other) {
+            if (other != index && pipeX[other] > furthestPipeX) {
+              furthestPipeX = pipeX[other];
+            }
+          }
+          pipeX[index] = furthestPipeX + pipeSpacing;
+          gapTop[index] =
+              random(35, screenH - GROUND_HEIGHT - GAP_HEIGHT - 20);
+          pipeScored[index] = false;
+        }
       }
 
-      const int16_t gapBottom = gapTop + GAP_HEIGHT;
       const float bodyLeft = BIRD_X + BIRD_BODY_OFFSET_X - BIRD_BODY_HALF_W;
       const float bodyRight = BIRD_X + BIRD_BODY_OFFSET_X + BIRD_BODY_HALF_W;
       const float bodyTop = birdY + BIRD_BODY_OFFSET_Y - BIRD_BODY_HALF_H;
       const float bodyBottom = birdY + BIRD_BODY_OFFSET_Y + BIRD_BODY_HALF_H;
       const bool outsideScreen =
           bodyTop < 0 || bodyBottom >= screenH - GROUND_HEIGHT;
-      const bool inPipeX = bodyRight > pipeX && bodyLeft < pipeX + PIPE_WIDTH;
-      // The cap sticks out past the stem, so it is checked over its own rows.
-      const bool inCapX = bodyRight > pipeX - PIPE_CAP_OVERHANG &&
-                          bodyLeft < pipeX + PIPE_WIDTH + PIPE_CAP_OVERHANG;
-      const bool hitCap =
-          inCapX && ((bodyTop < gapTop && bodyBottom > gapTop - PIPE_CAP_HEIGHT) ||
-                     (bodyBottom > gapBottom &&
-                      bodyTop < gapBottom + PIPE_CAP_HEIGHT));
-      const bool hitPipe =
-          hitCap || (inPipeX && (bodyTop < gapTop || bodyBottom > gapBottom));
+      bool hitPipe = false;
+      for (uint8_t index = 0; index < PIPE_COUNT; ++index) {
+        const int16_t pipeGapBottom = gapTop[index] + GAP_HEIGHT;
+        const bool inPipeX =
+            bodyRight > pipeX[index] &&
+            bodyLeft < pipeX[index] + PIPE_WIDTH;
+        // The cap sticks out past the stem, so it is checked over its own rows.
+        const bool inCapX =
+            bodyRight > pipeX[index] - PIPE_CAP_OVERHANG &&
+            bodyLeft < pipeX[index] + PIPE_WIDTH + PIPE_CAP_OVERHANG;
+        const bool hitCap =
+            inCapX &&
+            ((bodyTop < gapTop[index] &&
+              bodyBottom > gapTop[index] - PIPE_CAP_HEIGHT) ||
+             (bodyBottom > pipeGapBottom &&
+              bodyTop < pipeGapBottom + PIPE_CAP_HEIGHT));
+        if (hitCap ||
+            (inPipeX &&
+             (bodyTop < gapTop[index] || bodyBottom > pipeGapBottom))) {
+          hitPipe = true;
+          break;
+        }
+      }
       if (outsideScreen || hitPipe) {
         break;
       }
 
       drawBackground(display, sprite);
       if (useSprite) {
-        drawFrame(gameFrame, birdY, birdVelocity, static_cast<int16_t>(pipeX),
-                  gapTop, score, flapStartedAt);
+        drawFrame(gameFrame, birdY, birdVelocity, pipeX, gapTop, score,
+                  flapStartedAt);
         gameFrame.pushSprite(0, 0);
       } else {
-        drawFrame(display, birdY, birdVelocity, static_cast<int16_t>(pipeX),
-                  gapTop, score, flapStartedAt);
+        drawFrame(display, birdY, birdVelocity, pipeX, gapTop, score,
+                  flapStartedAt);
       }
     }
 

@@ -262,7 +262,8 @@ void drawFrame(TFT_eSPI& display, float birdY, float birdVelocity,
 // Game-over popup over the background: this game's score, the device best and
 // the leaderboard, with the score just earned highlighted in the list.
 void drawGameOver(TFT_eSPI& display, uint32_t score, uint32_t best,
-                  bool newBest, const uint32_t* top, uint8_t topCount) {
+                  bool newBest, const uint32_t* top, uint8_t topCount,
+                  uint32_t totalFlaps) {
   constexpr uint16_t PANEL_BG = 0x18C7;
   constexpr int16_t PANEL_W = 210;
   constexpr int16_t PANEL_H = 224;
@@ -310,6 +311,12 @@ void drawGameOver(TFT_eSPI& display, uint32_t score, uint32_t best,
     display.drawString(line, centerX, rowY);
   }
 
+  // Lifetime flaps, shown under the leaderboard.
+  display.setTextColor(TFT_CYAN, PANEL_BG);
+  snprintf(line, sizeof(line), "Total flaps: %lu",
+           static_cast<unsigned long>(totalFlaps));
+  display.drawString(line, centerX, panelY + 186);
+
   display.setTextColor(TFT_WHITE, PANEL_BG);
   display.drawString("BTN3 Play again   BTN4 Back", centerX,
                      panelY + PANEL_H - 18);
@@ -346,6 +353,7 @@ void runFlappyBird(TFT_eSPI& display) {
     float pipeSpeed = PIPE_SPEED_START;
     uint32_t lastFrame = millis();
     uint32_t flapStartedAt = lastFrame - 10 * FLAP_FRAME_MS;  // start at rest
+    uint32_t roundFlaps = 0;  // added to the lifetime counter when the round ends
 
     while (true) {
       const uint32_t now = millis();
@@ -357,6 +365,7 @@ void runFlappyBird(TFT_eSPI& display) {
 
       const Button button = readButtonEvent();
       if (button == Button::Button4) {
+        leaderboardAddFlaps("flappy", roundFlaps);  // quitting still counts
         audioEnd();
         gameFrame.deleteSprite();
         waitForButtonRelease();
@@ -369,6 +378,7 @@ void runFlappyBird(TFT_eSPI& display) {
           (held == Button::Button1 && now - flapStartedAt >= 3 * FLAP_FRAME_MS)) {
         birdVelocity = FLAP_VELOCITY;
         flapStartedAt = now;
+        ++roundFlaps;
         playFlapSound();
       }
 
@@ -450,14 +460,15 @@ void runFlappyBird(TFT_eSPI& display) {
 
     const bool newBest = leaderboardRecordScore("flappy", score);
     const uint32_t best = leaderboardBest("flappy");
+    const uint32_t totalFlaps = leaderboardAddFlaps("flappy", roundFlaps);
     uint32_t top[LEADERBOARD_SIZE];
     const uint8_t topCount = leaderboardTop("flappy", top, LEADERBOARD_SIZE);
     drawBackground(display, sprite, night);
     if (useSprite) {
-      drawGameOver(gameFrame, score, best, newBest, top, topCount);
+      drawGameOver(gameFrame, score, best, newBest, top, topCount, totalFlaps);
       gameFrame.pushSprite(0, 0);
     } else {
-      drawGameOver(display, score, best, newBest, top, topCount);
+      drawGameOver(display, score, best, newBest, top, topCount, totalFlaps);
     }
     playGameOverSound();
 

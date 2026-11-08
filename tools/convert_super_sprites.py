@@ -29,11 +29,19 @@ SPRITES = [
     ("sfbRedGorilla", ART / "RedGorilla.png"),
     ("sfbDirt", ART / "DirtTile.png"),
     ("sfbDirtLeft", ART / "DirtTileLeft.png"),
-    ("sfbDirtRight", ART / "DirtTileRight (2).png"),
-    ("sfbDirtLedge", ART / "DirtLedge.png"),
+    ("sfbDirtRight", ART / "DirtTileRight.png"),
     ("sfbGrass", ART / "GrassTile.png"),
-    ("sfbGrassLeft", ART / "GrassTileLeftEdge.png"),
-    ("sfbGrassRight", ART / "GrassTileRight.png"),
+    ("sfbBox", ART / "Box.png"),
+    ("sfbMystery", ART / "MysteryBox.png"),
+    # Used mystery box: same art, darkened (colors scaled to 40%).
+    ("sfbMysteryOff", ART / "MysteryBox.png", 0.4),
+    ("sfbEgg", ART / "RedEgg.png"),
+    ("sfbBlueEgg", ART / "BlueEgg.png"),
+    ("sfbRat", ART / "Rat.png"),
+    ("sfbFox", ART / "Fox.png"),
+    ("sfbNest", ART / "Nest.png"),
+    ("sfbEggCracking", ART / "CrackingEgg.png"),
+    ("sfbEggOpen", ART / "CrackedOpenEgg.png"),
 ]
 
 
@@ -41,12 +49,13 @@ def rgb565(r: int, g: int, b: int) -> int:
     return ((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3)
 
 
-def convert(path: Path):
+def convert(path: Path, shade: float = 1.0):
     image = Image.open(path).convert("RGBA")
     pixels = []
     for y in range(image.height):
         for x in range(image.width):
             r, g, b, a = image.getpixel((x, y))
+            r, g, b = int(r * shade), int(g * shade), int(b * shade)
             pixels.append(TRANSPARENT if a < 128 else rgb565(r, g, b))
             if pixels[-1] == TRANSPARENT and a >= 128:
                 pixels[-1] ^= 1  # never collide with the key color
@@ -63,8 +72,8 @@ def main() -> None:
         "constexpr uint16_t SFB_TRANSPARENT = 0xF81F;",
         "",
     ]
-    for name, path in SPRITES:
-        w, h, pixels = convert(path)
+    for name, path, *shade in SPRITES:
+        w, h, pixels = convert(path, *shade)
         upper = name[0].upper() + name[1:]
         lines.append(f"constexpr uint16_t {name}Width = {w};")
         lines.append(f"constexpr uint16_t {name}Height = {h};")

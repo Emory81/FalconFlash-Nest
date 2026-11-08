@@ -4,6 +4,7 @@
 
 namespace {
 constexpr char KEY_PREFIX = 's';
+constexpr const char* FLAPS_KEY = "flaps";
 
 // Loads the saved top scores, highest first; unused slots are 0.
 void loadScores(Preferences& preferences, uint32_t* scores) {
@@ -67,4 +68,23 @@ uint8_t leaderboardTop(const char* game, uint32_t* scores, uint8_t maxEntries) {
     }
   }
   return count;
+}
+
+uint32_t leaderboardTotalFlaps(const char* game) {
+  Preferences preferences;
+  preferences.begin(game, true);
+  const uint32_t total = preferences.getUInt(FLAPS_KEY, 0);
+  preferences.end();
+  return total;
+}
+
+uint32_t leaderboardAddFlaps(const char* game, uint32_t flaps) {
+  Preferences preferences;
+  preferences.begin(game, false);
+  const uint32_t total = preferences.getUInt(FLAPS_KEY, 0) + flaps;
+  if (flaps > 0) {
+    preferences.putUInt(FLAPS_KEY, total);
+  }
+  preferences.end();
+  return total;
 }

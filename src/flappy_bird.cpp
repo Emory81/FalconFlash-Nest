@@ -346,27 +346,34 @@ void runFlappyBird(TFT_eSPI& display) {
     float pipeSpeed = PIPE_SPEED_START;
     uint32_t lastFrame = millis();
     uint32_t flapStartedAt = lastFrame - 10 * FLAP_FRAME_MS;  // start at rest
+    uint8_t pendingFlaps = 0;
 
     while (true) {
       const uint32_t now = millis();
-      if (now - lastFrame < 30) {
-        delay(2);
-        continue;
-      }
-      lastFrame = now;
-
       const Button button = readButtonEvent();
+      const Button held = readButton();
       if (button == Button::Button4) {
         audioEnd();
         gameFrame.deleteSprite();
         waitForButtonRelease();
         return;
       }
-      const Button held = readButton();
+      if (button == Button::Button1 && pendingFlaps < 2) {
+        ++pendingFlaps;
+      }
+      if (now - lastFrame < 30) {
+        delay(2);
+        continue;
+      }
+      lastFrame = now;
+
       // A press flaps at once; holding it flaps again each time the wing
       // animation finishes.
-      if (button == Button::Button1 ||
+      if (pendingFlaps > 0 ||
           (held == Button::Button1 && now - flapStartedAt >= 3 * FLAP_FRAME_MS)) {
+        if (pendingFlaps > 0) {
+          --pendingFlaps;
+        }
         birdVelocity = FLAP_VELOCITY;
         flapStartedAt = now;
         playFlapSound();

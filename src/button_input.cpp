@@ -5,7 +5,7 @@
 namespace {
 constexpr uint8_t BUTTON_ADC_PIN = 35;
 constexpr uint8_t ADC_SAMPLE_COUNT = 8;
-constexpr uint32_t BUTTON_DEBOUNCE_MS = 30;
+constexpr uint32_t BUTTON_DEBOUNCE_MS = 15;
 
 // These boundaries sit between the nominal ADC values in the resistor ladder:
 // BTN1=0, BTN2~=370, BTN3~=740, BTN4~=1016, and released~=4095.

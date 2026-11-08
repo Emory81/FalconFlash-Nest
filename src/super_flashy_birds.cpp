@@ -594,17 +594,27 @@ void runSuperFlashyBirds(TFT_eSPI& display) {
   uint32_t jumpBufferUntil = 0;
   uint32_t lastDuckHeld = millis() - DUCK_GRACE_MS;
   uint32_t lastFrame = millis();
+  Button pendingDirection = Button::None;
+  bool pendingJump = false;
 
   while (true) {
     const uint32_t now = millis();
+    const Button sampledEvent = readButtonEvent();
+    const Button held = readButton();
+    if (sampledEvent == Button::Button1 ||
+        sampledEvent == Button::Button4) {
+      pendingDirection = sampledEvent;
+    } else if (sampledEvent == Button::Button3) {
+      pendingJump = true;
+    }
     if (now - lastFrame < FRAME_MS) {
       delay(2);
       continue;
     }
     lastFrame = now;
 
-    const Button event = readButtonEvent();
-    const Button held = readButton();
+    const Button event = pendingDirection;
+    pendingDirection = Button::None;
 
     if (event == Button::Button1 || event == Button::Button4) {
       if (event == lastDirection && now - lastDirectionPress <= DOUBLE_PRESS_MS) {
@@ -632,7 +642,10 @@ void runSuperFlashyBirds(TFT_eSPI& display) {
     const bool wantJump = held == Button::Button3;
     if (wantLeft || wantRight) lastDirectionHeld = now;
     // A jump needs a fresh press (holding BTN3 to exit must not bounce).
-    if (event == Button::Button3) jumpBufferUntil = now + JUMP_BUFFER_MS;
+    if (pendingJump) {
+      jumpBufferUntil = now + JUMP_BUFFER_MS;
+      pendingJump = false;
+    }
     const bool coasting = now - lastDirectionHeld < MOMENTUM_GRACE_MS;
 
     if (!wantLeft && !wantRight && p.onGround && !coasting &&

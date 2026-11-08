@@ -1150,9 +1150,22 @@ void runSuperFlashyBirds(TFT_eSPI& display) {
   uint32_t lastTick = millis();
   bool gliding = false;       // second jump press in the air; ends on landing
   uint32_t lastFrame = millis();
+  Button pendingDirection = Button::None;
+  bool pendingJump = false;
+  bool pendingCrouch = false;
 
   while (true) {
     const uint32_t now = millis();
+    const Button sampledEvent = readButtonEvent();
+    const Button held = readButton();
+    if (sampledEvent == Button::Button1 ||
+        sampledEvent == Button::Button4) {
+      pendingDirection = sampledEvent;
+    } else if (sampledEvent == Button::Button3) {
+      pendingJump = true;
+    } else if (sampledEvent == Button::Button2) {
+      pendingCrouch = true;
+    }
     if (now - lastFrame < FRAME_MS) {
       delay(2);
       continue;
@@ -1166,8 +1179,8 @@ void runSuperFlashyBirds(TFT_eSPI& display) {
     levelMs += dt;
     totalMs += dt;
 
-    const Button event = readButtonEvent();
-    const Button held = readButton();
+    const Button event = pendingDirection;
+    pendingDirection = Button::None;
 
     if (event == Button::Button1 || event == Button::Button4) {
       if (event == lastDirection && now - lastDirectionPress <= DOUBLE_PRESS_MS) {
@@ -1194,8 +1207,9 @@ void runSuperFlashyBirds(TFT_eSPI& display) {
     const bool wantJump = held == Button::Button3;
     if (wantLeft || wantRight) lastDirectionHeld = now;
     // A jump needs a fresh press (holding BTN3 to exit must not bounce).
-    if (event == Button::Button3) {
+    if (pendingJump) {
       jumpBufferUntil = now + JUMP_BUFFER_MS;
+      pendingJump = false;
       // Pressing jump again while already in the air starts a glide.
       if (!p.onGround) gliding = true;
     }
@@ -1213,7 +1227,10 @@ void runSuperFlashyBirds(TFT_eSPI& display) {
     // BTN2 toggles the crouch (one block tall). If a block is overhead the bird
     // is held crouched even after toggling off, and stands up by itself as soon
     // as it is out from under it.
-    if (event == Button::Button2) crouchWanted = !crouchWanted;
+    if (pendingCrouch) {
+      crouchWanted = !crouchWanted;
+      pendingCrouch = false;
+    }
     p.ducking = crouchWanted || !hasHeadroom(p, worldH);
     if (p.ducking) p.running = false;
 

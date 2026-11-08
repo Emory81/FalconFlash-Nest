@@ -180,19 +180,18 @@ void runGuitarHero(TFT_eSPI& display) {
     uint32_t nextNoteAt = millis() + FIRST_NOTE_DELAY_MS;
     uint32_t lastFrame = millis();
     uint32_t button4HeldSince = 0;
+    int8_t pendingLane = -1;
     bool gameOver = false;
 
     while (!gameOver) {
       const uint32_t now = millis();
-      if (now - lastFrame < FRAME_MS) {
-        delay(2);
-        continue;
+      const Button event = readButtonEvent();
+      const Button held = readButton();
+      const int8_t eventLane = buttonLane(event);
+      if (eventLane >= 0) {
+        pendingLane = eventLane;
       }
-      const uint32_t elapsedMs = now - lastFrame;
-      lastFrame = now;
-
-      const Button button = readButton();
-      if (button == Button::Button4) {
+      if (held == Button::Button4) {
         if (button4HeldSince == 0) {
           button4HeldSince = now;
         } else if (now - button4HeldSince >= BUTTON4_BACK_HOLD_MS) {
@@ -203,6 +202,12 @@ void runGuitarHero(TFT_eSPI& display) {
       } else {
         button4HeldSince = 0;
       }
+      if (now - lastFrame < FRAME_MS) {
+        delay(2);
+        continue;
+      }
+      const uint32_t elapsedMs = now - lastFrame;
+      lastFrame = now;
 
       if (!noteActive && now >= nextNoteAt) {
         noteActive = true;
@@ -213,7 +218,11 @@ void runGuitarHero(TFT_eSPI& display) {
         noteY += NOTE_SPEED * elapsedMs;
       }
 
-      const int8_t pressedLane = buttonLane(button);
+      int8_t pressedLane = pendingLane;
+      pendingLane = -1;
+      if (pressedLane < 0) {
+        pressedLane = buttonLane(held);
+      }
       if (noteActive && pressedLane >= 0 &&
           pressedLane == static_cast<int8_t>(noteLane)) {
         const float distance =

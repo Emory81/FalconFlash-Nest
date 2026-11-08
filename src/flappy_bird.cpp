@@ -50,6 +50,9 @@ constexpr float TILT_SCALE = 0.6f;
 constexpr uint32_t FLAP_FRAME_MS = 110;
 // One constant gravity for the whole arc, so the rise and fall are symmetric.
 constexpr float GRAVITY = 0.96f;
+// Extra downward acceleration per frame while button 2 is held, and the cap.
+constexpr float DIVE_ACCEL = 2.0f;
+constexpr float DIVE_MAX_VELOCITY = 16.0f;
 // One game in this many is played at night: night background and pipes
 // NIGHT_PIPE_FREQUENCY_MULTIPLIER times more common.
 constexpr long NIGHT_ONE_IN = 5;
@@ -221,7 +224,7 @@ void drawPipe(TFT_eSPI& display, int16_t pipeX, int16_t gapTop,
 
 void drawFrame(TFT_eSPI& display, float birdY, float birdVelocity,
                float pipeSpeed, const Pipe* pipes, uint8_t pipeCount,
-               uint16_t score, uint32_t flapStartedAt) {
+               uint16_t score, uint32_t best, uint32_t flapStartedAt) {
   for (uint8_t i = 0; i < pipeCount; ++i) {
     drawPipe(display, static_cast<int16_t>(pipes[i].x), pipes[i].gapTop,
              pipes[i].gapTop + GAP_HEIGHT);
@@ -244,11 +247,15 @@ void drawFrame(TFT_eSPI& display, float birdY, float birdVelocity,
 
   display.setTextFont(1);
   display.setTextSize(2);
-  display.setTextColor(TFT_WHITE);
   display.setTextDatum(TL_DATUM);
   char scoreText[16];
   snprintf(scoreText, sizeof(scoreText), "Score: %u", score);
-  display.drawString(scoreText, 8, 6);
+  const int16_t boxW = display.textWidth(scoreText) + 12;
+  const int16_t boxH = display.fontHeight() + 8;
+  display.fillRoundRect(4, 2, boxW, boxH, 6, TFT_BLACK);
+  display.drawRoundRect(4, 2, boxW, boxH, 6, TFT_WHITE);
+  display.setTextColor(score > best ? TFT_YELLOW : TFT_WHITE);
+  display.drawString(scoreText, 10, 6);
   drawBackButton(display);
 }
 
@@ -335,6 +342,7 @@ void runFlappyBird(TFT_eSPI& display) {
     const float pipeSpacing =
         (screenW + PIPE_SPAWN_MARGIN + PIPE_WIDTH) / pipeFrequency;
     uint16_t score = 0;
+    const uint32_t bestAtStart = leaderboardBest("flappy");
     float pipeSpeed = PIPE_SPEED_START;
     uint32_t lastFrame = millis();
     uint32_t flapStartedAt = lastFrame - 10 * FLAP_FRAME_MS;  // start at rest
@@ -354,13 +362,21 @@ void runFlappyBird(TFT_eSPI& display) {
         waitForButtonRelease();
         return;
       }
-      if (button == Button::Button1) {
+      const Button held = readButton();
+      // A press flaps at once; holding it flaps again each time the wing
+      // animation finishes.
+      if (button == Button::Button1 ||
+          (held == Button::Button1 && now - flapStartedAt >= 3 * FLAP_FRAME_MS)) {
         birdVelocity = FLAP_VELOCITY;
         flapStartedAt = now;
         playFlapSound();
       }
 
       birdVelocity += GRAVITY;
+      if (held == Button::Button2) {
+        birdVelocity += DIVE_ACCEL;
+        if (birdVelocity > DIVE_MAX_VELOCITY) birdVelocity = DIVE_MAX_VELOCITY;
+      }
       birdY += birdVelocity;
 
       for (uint8_t i = 0; i < pipeCount; ++i) {
@@ -424,11 +440,11 @@ void runFlappyBird(TFT_eSPI& display) {
       drawBackground(display, sprite, night);
       if (useSprite) {
         drawFrame(gameFrame, birdY, birdVelocity, pipeSpeed, pipes, pipeCount,
-                  score, flapStartedAt);
+                  score, bestAtStart, flapStartedAt);
         gameFrame.pushSprite(0, 0);
       } else {
         drawFrame(display, birdY, birdVelocity, pipeSpeed, pipes, pipeCount,
-                  score, flapStartedAt);
+                  score, bestAtStart, flapStartedAt);
       }
     }
 

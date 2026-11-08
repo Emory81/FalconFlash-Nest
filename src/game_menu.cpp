@@ -6,6 +6,7 @@
 #include "flappy_bird.h"
 #include "flappy_sprites.h"
 #include "guitar_hero.h"
+#include "super_flashy_birds.h"
 
 namespace {
 constexpr uint16_t MENU_BG = 0x18C7;
@@ -19,7 +20,7 @@ constexpr int16_t TILE_TOP = 36;
 
 constexpr const char* GAME_NAMES[] = {
     "Flappy Falcon", "Guitar Hero", "Pong", "Brick Breaker", "Runner",
-    "Memory"};
+    "Flashy Birds"};
 
 int16_t tileX(uint8_t index) {
   return TILE_LEFT + (index % 3) * (TILE_WIDTH + TILE_GAP);
@@ -65,14 +66,6 @@ void drawRunnerIcon(TFT_eSPI& display, int16_t x, int16_t y) {
   display.drawLine(x + 8, y + 41, x + 65, y + 41, TFT_GREEN);
 }
 
-void drawMemoryIcon(TFT_eSPI& display, int16_t x, int16_t y) {
-  display.drawRoundRect(x + 13, y + 7, 20, 30, 4, TFT_CYAN);
-  display.drawRoundRect(x + 43, y + 7, 20, 30, 4, TFT_CYAN);
-  display.drawLine(x + 19, y + 14, x + 27, y + 30, TFT_CYAN);
-  display.drawLine(x + 27, y + 14, x + 19, y + 30, TFT_CYAN);
-  display.fillCircle(x + 53, y + 22, 5, TFT_MAGENTA);
-}
-
 void drawGameIcon(TFT_eSPI& display, uint8_t index, int16_t x, int16_t y) {
   switch (index) {
     case 1:
@@ -88,7 +81,7 @@ void drawGameIcon(TFT_eSPI& display, uint8_t index, int16_t x, int16_t y) {
       drawRunnerIcon(display, x, y);
       break;
     default:
-      drawMemoryIcon(display, x, y);
+      drawSuperFlashyBirdsIcon(display, x + 8, y);
       break;
   }
 }
@@ -253,6 +246,8 @@ void launchSelectedGame(TFT_eSPI& display, uint8_t selectedIndex) {
     runFlappyBird(display);
   } else if (selectedIndex == 1) {
     runGuitarHero(display);
+  } else if (selectedIndex == 5) {
+    runSuperFlashyBirds(display);
   } else {
     showComingSoon(display, GAME_NAMES[selectedIndex]);
   }

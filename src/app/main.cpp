@@ -929,7 +929,15 @@ void setup() {
   digitalWrite(BACKLIGHT_PIN, LOW);
 
   initButtons();
-  const Button wakeButton = waitForPowerButton();
+  const uint8_t otaResumeButton = takeOtaResumeButton();
+  const Button wakeButton =
+      otaResumeButton == 0 ? waitForPowerButton()
+                           : static_cast<Button>(otaResumeButton);
+  if (otaResumeButton != 0) {
+    // A software restart has no deep-sleep wake cause. Resume the original
+    // order button and reconnect instead of immediately sleeping again.
+    startDeviceWiFi();
+  }
 
   tft.init();
   tft.setRotation(DISPLAY_ROTATION);
@@ -938,19 +946,21 @@ void setup() {
   digitalWrite(BACKLIGHT_PIN, HIGH);
   playBootSound();
   const bool demoMode = detectDemoMode();
-  checkForFirmwareUpdate();
   if (GAME_MODE_ONLY) {
+    checkForFirmwareUpdate(tft, static_cast<uint8_t>(wakeButton));
     showGameMenu(tft, true);
     enterStandby(true);
     return;
   }
 
   if (demoMode) {
+    checkForFirmwareUpdate(tft, static_cast<uint8_t>(wakeButton));
     runCountdownTimer("DEMO $4.25", true, 0, 0);
     return;
   }
 
   ensureDevicePaired(tft);
+  checkForFirmwareUpdate(tft, static_cast<uint8_t>(wakeButton));
   String priceText;
   uint8_t savedPickupLocationMask = 0;
   const uint8_t orderButtonNumber = static_cast<uint8_t>(wakeButton);

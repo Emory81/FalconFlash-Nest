@@ -14,6 +14,7 @@ constexpr char WIFI_PASSWORD[] = "";
 constexpr char BASE_URL[] = "https://falconflash.emory.work/api";
 constexpr char WIFI_CHANNEL_KEY[] = "wifi_channel";
 constexpr char WIFI_BSSID_KEY[] = "wifi_bssid";
+constexpr char OTA_RESUME_BUTTON_KEY[] = "ota_resume_btn";
 #ifndef FALCON_FACTORY_ID
 #error "FALCON_FACTORY_ID must be set in .env"
 #endif
@@ -42,6 +43,8 @@ constexpr char ORDER_STATUS_PATH[] = "/order_status";
 constexpr uint8_t PICKUP_LOCATION_COUNT = 5;
 constexpr uint32_t WIFI_RETRY_MS = 10000;
 constexpr uint32_t WIFI_HINT_FALLBACK_MS = 2000;
+constexpr uint32_t FIRMWARE_WIFI_WAIT_MS = 10000;
+constexpr uint32_t OTA_STREAM_TIMEOUT_MS = 15000;
 constexpr uint32_t PAIRING_POLL_MS = 2000;
 constexpr uint32_t DEFAULT_PAIRING_EXPIRY_MS = 600000;
 bool wifiStarted = false;
@@ -376,7 +379,20 @@ bool isNewerFirmwareVersion(const String& candidateVersion) {
   return false;
 }
 
-bool installFirmwareUpdate(const String& firmwareUrl) {
+void drawOtaProgress(TFT_eSPI& display, uint8_t percent) {
+  const int16_t textY = display.height() - 14;
+  display.fillRect(0, textY - 2, 118, 16, TFT_BLACK);
+  display.setTextFont(1);
+  display.setTextSize(1);
+  display.setTextDatum(TL_DATUM);
+  display.setTextColor(TFT_WHITE, TFT_BLACK);
+  char text[24];
+  snprintf(text, sizeof(text), "Updating: %u%%", percent);
+  display.drawString(text, 4, textY);
+}
+
+bool installFirmwareUpdate(const String& firmwareUrl, TFT_eSPI& display,
+                           uint8_t wakeButtonNumber) {
   WiFiClientSecure client;
   client.setInsecure();
 
@@ -403,18 +419,62 @@ bool installFirmwareUpdate(const String& firmwareUrl) {
   }
 
   WiFiClient* stream = http.getStreamPtr();
-  const size_t written = stream == nullptr ? 0 : Update.writeStream(*stream);
+  uint8_t buffer[1024];
+  size_t written = 0;
+  uint32_t lastDataAt = millis();
+  uint8_t lastPercent = 255;
+  bool writeOk = stream != nullptr;
+  drawOtaProgress(display, 0);
+  while (writeOk &&
+         (contentLength <= 0 || written < static_cast<size_t>(contentLength)) &&
+         (http.connected() || stream->available())) {
+    const int available = stream->available();
+    if (available <= 0) {
+      if (millis() - lastDataAt >= OTA_STREAM_TIMEOUT_MS) {
+        writeOk = false;
+        break;
+      }
+      delay(2);
+      continue;
+    }
+
+    size_t requested = min<size_t>(sizeof(buffer), available);
+    if (contentLength > 0) {
+      requested =
+          min<size_t>(requested, static_cast<size_t>(contentLength) - written);
+    }
+    const size_t received = stream->readBytes(buffer, requested);
+    if (received == 0 || Update.write(buffer, received) != received) {
+      writeOk = false;
+      break;
+    }
+    written += received;
+    lastDataAt = millis();
+    if (contentLength > 0) {
+      const uint8_t percent = static_cast<uint8_t>(
+          min<size_t>(100, written * 100 / static_cast<size_t>(contentLength)));
+      if (percent != lastPercent) {
+        drawOtaProgress(display, percent);
+        lastPercent = percent;
+      }
+    }
+  }
   const bool sizeMatches =
       contentLength <= 0 || written == static_cast<size_t>(contentLength);
-  if (!sizeMatches || !Update.end()) {
+  if (!writeOk || !sizeMatches || !Update.end()) {
     Update.abort();
     http.end();
     return false;
   }
 
+  drawOtaProgress(display, 100);
   http.end();
-  delay(250);
-  ESP.restart();
+  Preferences preferences;
+  preferences.begin("falcon", false);
+  preferences.putUChar(OTA_RESUME_BUTTON_KEY, wakeButtonNumber);
+  preferences.end();
+  delay(500);
+  esp_restart();
   return true;
 }
 
@@ -455,26 +515,22 @@ String findFirmwareAssetUrl(const String& releaseJson) {
 
   int searchFrom = releaseJson.indexOf('[', assetsKeyStart);
   while (searchFrom >= 0) {
-    const int objectStart = releaseJson.indexOf('{', searchFrom);
-    if (objectStart < 0) {
+    const int nameKeyStart = releaseJson.indexOf("\"name\"", searchFrom);
+    if (nameKeyStart < 0) {
       return String();
     }
-    const int objectEnd = releaseJson.indexOf('}', objectStart);
-    if (objectEnd < 0) {
-      return String();
-    }
-
-    const String assetJson = releaseJson.substring(objectStart, objectEnd + 1);
+    const String assetJson = releaseJson.substring(nameKeyStart);
     const String assetName = extractJsonString(assetJson, "name");
     if (assetName == FIRMWARE_ASSET) {
       return extractJsonString(assetJson, "browser_download_url");
     }
-    searchFrom = objectEnd + 1;
+    searchFrom = nameKeyStart + 6;
   }
   return String();
 }
 
-bool checkForFirmwareUpdateInternal() {
+bool checkForFirmwareUpdateInternal(TFT_eSPI& display,
+                                    uint8_t wakeButtonNumber) {
   if (GITHUB_REPO[0] == '\0' || WiFi.status() != WL_CONNECTED) {
     return false;
   }
@@ -513,7 +569,7 @@ bool checkForFirmwareUpdateInternal() {
     return false;
   }
 
-  return installFirmwareUpdate(firmwareUrl);
+  return installFirmwareUpdate(firmwareUrl, display, wakeButtonNumber);
 }
 
 String loadDeviceToken() {
@@ -582,8 +638,29 @@ bool deviceWiFiConnected() {
   return WiFi.status() == WL_CONNECTED;
 }
 
-bool checkForFirmwareUpdate() {
-  return checkForFirmwareUpdateInternal();
+bool checkForFirmwareUpdate(TFT_eSPI& display, uint8_t wakeButtonNumber) {
+  if (GITHUB_REPO[0] == '\0') {
+    return false;
+  }
+
+  const uint32_t startedAt = millis();
+  while (!deviceWiFiConnected() &&
+         millis() - startedAt < FIRMWARE_WIFI_WAIT_MS) {
+    delay(100);
+  }
+  return checkForFirmwareUpdateInternal(display, wakeButtonNumber);
+}
+
+uint8_t takeOtaResumeButton() {
+  Preferences preferences;
+  preferences.begin("falcon", false);
+  const uint8_t button = preferences.getUChar(OTA_RESUME_BUTTON_KEY, 0);
+  preferences.remove(OTA_RESUME_BUTTON_KEY);
+  preferences.end();
+  if (button < 1 || button > 4) {
+    return 0;
+  }
+  return button;
 }
 
 bool ensureDevicePaired(TFT_eSPI& display) {

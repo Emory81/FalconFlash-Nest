@@ -1,4 +1,5 @@
 import os
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -56,6 +57,10 @@ def run_git(*arguments):
 
 
 def firmware_version():
+    version_override = os.environ.get("FALCON_FIRMWARE_VERSION_OVERRIDE", "")
+    if version_override:
+        return normalize_version(version_override)
+
     github_ref = os.environ.get("GITHUB_REF", "")
     if github_ref.startswith("refs/tags/"):
         return normalize_version(github_ref[len("refs/tags/"):])
@@ -72,11 +77,23 @@ def c_string(value):
     return '\\"' + escaped + '\\"'
 
 
+build_version = firmware_version()
+
+
+def preserve_release_firmware(source, target, env):
+    if build_version == "0.0.0-dev":
+        return
+    source_path = Path(str(target[0]))
+    release_dir = project_dir / "release_assets" / build_version
+    release_dir.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(source_path, release_dir / "firmware.bin")
+
+
 env.Append(
     CPPDEFINES=[
         ("FALCON_FACTORY_ID", c_string(dotenv["FALCON_FACTORY_ID"])),
         ("FALCON_FACTORY_SECRET", c_string(dotenv["FALCON_FACTORY_SECRET"])),
-        ("FALCON_FIRMWARE_VERSION", c_string(firmware_version())),
+        ("FALCON_FIRMWARE_VERSION", c_string(build_version)),
         ("FALCON_GITHUB_REPO", c_string(dotenv.get("FALCON_GITHUB_REPO", ""))),
         ("FALCON_FIRMWARE_ASSET",
          c_string(dotenv.get("FALCON_FIRMWARE_ASSET", "firmware.bin"))),
@@ -84,3 +101,4 @@ env.Append(
         ("FALCON_GAME_ASSET_BASE_URL", c_string(game_asset_base_url)),
     ]
 )
+env.AddPostAction("$BUILD_DIR/${PROGNAME}.bin", preserve_release_firmware)

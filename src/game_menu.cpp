@@ -189,29 +189,21 @@ void drawFlappyTile(TFT_eSPI& display, const FlappyAssets& flappyAssets,
   }
 }
 
-void drawMenu(TFT_eSPI& display, uint8_t selectedIndex,
-              const FlappyAssets& flappyAssets,
-              const SuperFlashyAssets& superAssets) {
-  display.fillScreen(MENU_BG);
-  display.setTextFont(1);
-  display.setTextSize(2);
-  display.setTextColor(TFT_WHITE, MENU_BG);
-  display.setTextDatum(TC_DATUM);
-  display.drawString("Games", display.width() / 2, 6);
-
-  for (uint8_t index = 0; index < 6; ++index) {
-    const int16_t x = tileX(index);
-    const int16_t y = tileY(index);
-    if (index == 0) {
-      drawFlappyTile(display, flappyAssets, x, y, selectedIndex == index);
-      continue;
-    }
+void drawGameTile(TFT_eSPI& display, uint8_t index, bool selected,
+                  const FlappyAssets& flappyAssets,
+                  const SuperFlashyAssets& superAssets) {
+  const int16_t x = tileX(index);
+  const int16_t y = tileY(index);
+  if (index == 0) {
+    drawFlappyTile(display, flappyAssets, x, y, selected);
+    return;
+  }
 
     display.fillRoundRect(x, y, TILE_WIDTH, TILE_HEIGHT, TILE_RADIUS,
                           MENU_TILE);
     display.drawRoundRect(x, y, TILE_WIDTH, TILE_HEIGHT, TILE_RADIUS,
-                          index == selectedIndex ? TFT_YELLOW : TFT_WHITE);
-    if (index == selectedIndex) {
+                          selected ? TFT_YELLOW : TFT_WHITE);
+    if (selected) {
       display.drawRoundRect(x + 2, y + 2, TILE_WIDTH - 4, TILE_HEIGHT - 4,
                             TILE_RADIUS - 2, TFT_YELLOW);
     }
@@ -223,6 +215,21 @@ void drawMenu(TFT_eSPI& display, uint8_t selectedIndex,
     display.setTextDatum(BC_DATUM);
     display.drawString(GAME_NAMES[index], x + TILE_WIDTH / 2,
                        y + TILE_HEIGHT - 7);
+}
+
+void drawMenu(TFT_eSPI& display, uint8_t selectedIndex,
+              const FlappyAssets& flappyAssets,
+              const SuperFlashyAssets& superAssets) {
+  display.fillScreen(MENU_BG);
+  display.setTextFont(1);
+  display.setTextSize(2);
+  display.setTextColor(TFT_WHITE, MENU_BG);
+  display.setTextDatum(TC_DATUM);
+  display.drawString("Games", display.width() / 2, 6);
+
+  for (uint8_t index = 0; index < 6; ++index) {
+    drawGameTile(display, index, index == selectedIndex, flappyAssets,
+                 superAssets);
   }
 
   display.setTextFont(1);
@@ -232,6 +239,17 @@ void drawMenu(TFT_eSPI& display, uint8_t selectedIndex,
   display.drawString("BTN1/2 Move   BTN3 Select   BTN4 Back",
                      display.width() / 2,
                      display.height() - 4);
+}
+
+void updateMenuSelection(TFT_eSPI& display, uint8_t previousIndex,
+                         uint8_t selectedIndex,
+                         const FlappyAssets& flappyAssets,
+                         const SuperFlashyAssets& superAssets) {
+  if (previousIndex == selectedIndex) return;
+  // Redraw only the two affected tiles. Redrawing the whole screen here makes
+  // the menu visibly flash whenever an arrow button is pressed.
+  drawGameTile(display, previousIndex, false, flappyAssets, superAssets);
+  drawGameTile(display, selectedIndex, true, flappyAssets, superAssets);
 }
 
 void showComingSoon(TFT_eSPI& display, const char* name) {
@@ -279,11 +297,15 @@ bool showGameMenu(TFT_eSPI& display, bool gameModeOnly) {
   while (true) {
     const Button button = readButtonEvent();
     if (button == Button::Button1) {
+      const uint8_t previousIndex = selectedIndex;
       selectedIndex = selectedIndex == 0 ? 5 : selectedIndex - 1;
-      drawMenu(display, selectedIndex, flappyAssets, superAssets);
+      updateMenuSelection(display, previousIndex, selectedIndex, flappyAssets,
+                          superAssets);
     } else if (button == Button::Button2) {
+      const uint8_t previousIndex = selectedIndex;
       selectedIndex = (selectedIndex + 1) % 6;
-      drawMenu(display, selectedIndex, flappyAssets, superAssets);
+      updateMenuSelection(display, previousIndex, selectedIndex, flappyAssets,
+                          superAssets);
     } else if (button == Button::Button3) {
       waitForButtonRelease();
       flappyAssets.release();

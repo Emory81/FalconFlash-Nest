@@ -26,6 +26,7 @@ constexpr int16_t PIPE_CAP_ART_WIDTH = 32;
 constexpr int16_t PIPE_CAP_ART_HEIGHT = 14;
 constexpr int16_t BACKGROUND_WIDTH = 320;
 constexpr int16_t BACKGROUND_HEIGHT = 240;
+constexpr int16_t FRAME_BAND_HEIGHT = 40;
 constexpr int16_t zoomed(int16_t value) {
   return static_cast<int16_t>(value * ZOOM + 0.5f);
 }
@@ -117,6 +118,20 @@ void drawBackButton(TFT_eSPI& display) {
                      BACK_BUTTON_Y + BACK_BUTTON_H / 2);
 }
 
+void drawBackButtonInBand(TFT_eSPI& display, int16_t bandTop) {
+  const int16_t y = BACK_BUTTON_Y - bandTop;
+  display.fillRoundRect(BACK_BUTTON_X, y, BACK_BUTTON_W, BACK_BUTTON_H, 6,
+                        TFT_BLACK);
+  display.drawRoundRect(BACK_BUTTON_X, y, BACK_BUTTON_W, BACK_BUTTON_H, 6,
+                        TFT_WHITE);
+  display.setTextFont(1);
+  display.setTextSize(1);
+  display.setTextColor(TFT_WHITE, TFT_BLACK);
+  display.setTextDatum(MC_DATUM);
+  display.drawString("BTN4 Back", BACK_BUTTON_X + BACK_BUTTON_W / 2,
+                     y + BACK_BUTTON_H / 2);
+}
+
 // One flap per button press: open, transition, closed, then back to the
 // default wings-back pose.
 const uint16_t* birdFrame(const FlappyAssets& assets, uint32_t flapStartedAt) {
@@ -151,6 +166,32 @@ void drawSpriteRotated(TFT_eSPI& display, int16_t centerX, int16_t centerY,
       const uint16_t color = pixels[sy * w + sx];
       if (color != SPRITE_TRANSPARENT) {
         display.drawPixel(centerX + dx, centerY + dy, color);
+      }
+    }
+  }
+}
+
+void drawSpriteRotatedInBand(TFT_eSPI& display, int16_t centerX,
+                             int16_t centerY, int16_t bandTop, int16_t w,
+                             int16_t h, const uint16_t* pixels,
+                             float tiltRadians) {
+  const float cosT = cosf(tiltRadians);
+  const float sinT = sinf(tiltRadians);
+  const float srcCenterX = (w - 1) / 2.0f;
+  const float srcCenterY = (h - 1) / 2.0f;
+  const int16_t radius =
+      static_cast<int16_t>(sqrtf(w * w + h * h) * ZOOM / 2.0f) + 1;
+
+  for (int16_t dy = -radius; dy <= radius; ++dy) {
+    const int16_t screenY = centerY + dy;
+    if (screenY < bandTop || screenY >= bandTop + display.height()) continue;
+    for (int16_t dx = -radius; dx <= radius; ++dx) {
+      const int16_t sx = lroundf(srcCenterX + (dx * cosT + dy * sinT) / ZOOM);
+      const int16_t sy = lroundf(srcCenterY + (dy * cosT - dx * sinT) / ZOOM);
+      if (sx < 0 || sx >= w || sy < 0 || sy >= h) continue;
+      const uint16_t color = pixels[sy * w + sx];
+      if (color != SPRITE_TRANSPARENT) {
+        display.drawPixel(centerX + dx, screenY - bandTop, color);
       }
     }
   }
@@ -209,6 +250,27 @@ void drawImage(TFT_eSPI& display, int16_t x, int16_t y, int16_t srcW,
   }
 }
 
+void drawImageInBand(TFT_eSPI& display, int16_t x, int16_t screenY,
+                     int16_t bandTop, int16_t srcW, int16_t srcH,
+                     const uint16_t* pixels, bool flipVertical, int16_t destW,
+                     int16_t destH) {
+  for (int16_t row = 0; row < destH; ++row) {
+    const int16_t y = screenY + row - bandTop;
+    if (y < 0 || y >= display.height()) continue;
+    int16_t srcRow = static_cast<int16_t>(row / PIPE_ZOOM);
+    srcRow = srcRow >= srcH ? srcH - 1 : srcRow;
+    if (flipVertical) srcRow = srcH - 1 - srcRow;
+    for (int16_t col = 0; col < destW; ++col) {
+      const int16_t dx = x + col;
+      if (dx < 0 || dx >= display.width()) continue;
+      int16_t srcCol = static_cast<int16_t>(col / PIPE_ZOOM);
+      srcCol = srcCol >= srcW ? srcW - 1 : srcCol;
+      const uint16_t color = pixels[srcRow * srcW + srcCol];
+      if (color != SPRITE_TRANSPARENT) display.drawPixel(dx, y, color);
+    }
+  }
+}
+
 // Stem tiles from the repeating body art, then the cap on the open end.
 void drawPipe(TFT_eSPI& display, const FlappyAssets& assets, int16_t pipeX,
               int16_t gapTop, int16_t gapBottom) {
@@ -231,6 +293,67 @@ void drawPipe(TFT_eSPI& display, const FlappyAssets& assets, int16_t pipeX,
   for (int16_t y = gapBottom + PIPE_CAP_H; y < screenH; y += PIPE_TILE_HEIGHT) {
     drawImage(display, pipeX, y, PIPE_BODY_ART_WIDTH, PIPE_BODY_ART_HEIGHT,
               assets.pipeBody.pixels(), false, PIPE_WIDTH, PIPE_TILE_HEIGHT);
+  }
+}
+
+void drawPipeInBand(TFT_eSPI& display, const FlappyAssets& assets,
+                    int16_t pipeX, int16_t gapTop, int16_t gapBottom,
+                    int16_t bandTop, int16_t screenH) {
+  const int16_t capX = pipeX - PIPE_CAP_OVERHANG;
+  for (int16_t y = 0; y < gapTop - PIPE_CAP_H; y += PIPE_TILE_HEIGHT) {
+    const int16_t h = min<int16_t>(PIPE_TILE_HEIGHT, gapTop - PIPE_CAP_H - y);
+    drawImageInBand(display, pipeX, y, bandTop, PIPE_BODY_ART_WIDTH,
+                    PIPE_BODY_ART_HEIGHT, assets.pipeBody.pixels(), false,
+                    PIPE_WIDTH, h);
+  }
+  drawImageInBand(display, capX, gapTop - PIPE_CAP_H, bandTop,
+                  PIPE_CAP_ART_WIDTH, PIPE_CAP_ART_HEIGHT,
+                  assets.pipeCap.pixels(), true, PIPE_CAP_W, PIPE_CAP_H);
+  drawImageInBand(display, capX, gapBottom, bandTop, PIPE_CAP_ART_WIDTH,
+                  PIPE_CAP_ART_HEIGHT, assets.pipeCap.pixels(), false,
+                  PIPE_CAP_W, PIPE_CAP_H);
+  for (int16_t y = gapBottom + PIPE_CAP_H; y < screenH;
+       y += PIPE_TILE_HEIGHT) {
+    drawImageInBand(display, pipeX, y, bandTop, PIPE_BODY_ART_WIDTH,
+                    PIPE_BODY_ART_HEIGHT, assets.pipeBody.pixels(), false,
+                    PIPE_WIDTH, PIPE_TILE_HEIGHT);
+  }
+}
+
+void drawFrameInBand(TFT_eSPI& display, const FlappyAssets& assets,
+                     int16_t bandTop, int16_t screenH, float birdY,
+                     float birdVelocity, float pipeSpeed, const Pipe* pipes,
+                     uint8_t pipeCount, uint16_t score, uint32_t best,
+                     uint32_t flapStartedAt) {
+  for (uint8_t i = 0; i < pipeCount; ++i) {
+    drawPipeInBand(display, assets, static_cast<int16_t>(pipes[i].x),
+                   pipes[i].gapTop, pipes[i].gapTop + GAP_HEIGHT, bandTop,
+                   screenH);
+  }
+
+  float tilt = atan2f(birdVelocity, pipeSpeed) * TILT_SCALE;
+  const float maxTilt = MAX_TILT_DEGREES * static_cast<float>(M_PI) / 180.0f;
+  tilt = tilt > maxTilt ? maxTilt : (tilt < -maxTilt ? -maxTilt : tilt);
+  drawSpriteRotatedInBand(display, BIRD_X, static_cast<int16_t>(birdY),
+                          bandTop, BIRD_ART_WIDTH, BIRD_ART_HEIGHT,
+                          birdFrame(assets, flapStartedAt), tilt);
+
+  if (bandTop == 0) {
+    display.setTextFont(1);
+    display.setTextSize(2);
+    display.setTextDatum(TL_DATUM);
+    char scoreText[16];
+    snprintf(scoreText, sizeof(scoreText), "Score: %u", score);
+    const int16_t boxW = display.textWidth(scoreText) + 12;
+    const int16_t boxH = display.fontHeight() + 8;
+    display.fillRoundRect(4, 2, boxW, boxH, 6, TFT_BLACK);
+    display.drawRoundRect(4, 2, boxW, boxH, 6, TFT_WHITE);
+    display.setTextColor(score > best ? TFT_YELLOW : TFT_WHITE);
+    display.drawString(scoreText, 10, 6);
+  }
+  if (BACK_BUTTON_Y < bandTop + display.height() &&
+      BACK_BUTTON_Y + BACK_BUTTON_H > bandTop) {
+    drawBackButtonInBand(display, bandTop);
   }
 }
 
@@ -349,11 +472,12 @@ void runFlappyBird(TFT_eSPI& display) {
   // Keep the speaker enabled while the game runs so short effects are heard.
   audioBegin();
 
-  TFT_eSprite gameFrame(&display);
-  gameFrame.setColorDepth(8);
-  gameFrame.createSprite(screenW, screenH);
-  const bool useSprite = gameFrame.created();
-  TFT_eSprite* const sprite = useSprite ? &gameFrame : nullptr;
+  // A full-screen frame buffer does not fit reliably beside the downloaded
+  // graphics and Wi-Fi buffers. Compose one horizontal band at a time instead.
+  TFT_eSprite frameBand(&display);
+  frameBand.setColorDepth(8);
+  const bool useBands =
+      frameBand.createSprite(screenW, FRAME_BAND_HEIGHT) != nullptr;
 
   while (true) {
     float birdY = screenH / 2.0f;
@@ -380,7 +504,7 @@ void runFlappyBird(TFT_eSPI& display) {
       if (button == Button::Button4) {
         leaderboardAddFlaps("flappy", roundFlaps);  // quitting still counts
         audioEnd();
-        gameFrame.deleteSprite();
+        frameBand.deleteSprite();
         assets.release();
         waitForButtonRelease();
         return;
@@ -472,12 +596,19 @@ void runFlappyBird(TFT_eSPI& display) {
         break;
       }
 
-      drawBackground(display, sprite, assets);
-      if (useSprite) {
-        drawFrame(gameFrame, assets, birdY, birdVelocity, pipeSpeed, pipes,
-                  pipeCount, score, bestAtStart, flapStartedAt);
-        gameFrame.pushSprite(0, 0);
+      if (useBands) {
+        for (int16_t bandTop = 0; bandTop < screenH;
+             bandTop += FRAME_BAND_HEIGHT) {
+          memcpy(frameBand.getPointer(),
+                 assets.background.data + bandTop * screenW,
+                 screenW * FRAME_BAND_HEIGHT);
+          drawFrameInBand(frameBand, assets, bandTop, screenH, birdY,
+                          birdVelocity, pipeSpeed, pipes, pipeCount, score,
+                          bestAtStart, flapStartedAt);
+          frameBand.pushSprite(0, bandTop);
+        }
       } else {
+        drawBackground(display, nullptr, assets);
         drawFrame(display, assets, birdY, birdVelocity, pipeSpeed, pipes,
                   pipeCount, score, bestAtStart, flapStartedAt);
       }
@@ -488,20 +619,15 @@ void runFlappyBird(TFT_eSPI& display) {
     const uint32_t totalFlaps = leaderboardAddFlaps("flappy", roundFlaps);
     uint32_t top[LEADERBOARD_SIZE];
     const uint8_t topCount = leaderboardTop("flappy", top, LEADERBOARD_SIZE);
-    drawBackground(display, sprite, assets);
-    if (useSprite) {
-      drawGameOver(gameFrame, score, best, newBest, top, topCount, totalFlaps);
-      gameFrame.pushSprite(0, 0);
-    } else {
-      drawGameOver(display, score, best, newBest, top, topCount, totalFlaps);
-    }
+    drawBackground(display, nullptr, assets);
+    drawGameOver(display, score, best, newBest, top, topCount, totalFlaps);
     playGameOverSound();
 
     while (true) {
       const Button button = readButtonEvent();
       if (button == Button::Button4) {
         audioEnd();
-        gameFrame.deleteSprite();
+        frameBand.deleteSprite();
         assets.release();
         waitForButtonRelease();
         return;

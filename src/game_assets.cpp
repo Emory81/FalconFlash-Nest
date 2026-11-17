@@ -437,7 +437,7 @@ bool writeManifestAndReplace(const String& manifest) {
 }
 
 bool manifestFilesComplete(const String& manifest) {
-  ManifestEntry entries[MAX_MANIFEST_ENTRIES];
+  static ManifestEntry entries[MAX_MANIFEST_ENTRIES];
   const size_t count = parseManifest(manifest, entries, MAX_MANIFEST_ENTRIES);
   if (count == 0) return false;
   for (size_t index = 0; index < count; ++index) {
@@ -450,7 +450,7 @@ bool synchronizeAssets(TFT_eSPI& display) {
   String remoteManifest;
   if (!fetchManifest(remoteManifest)) return false;
 
-  ManifestEntry entries[MAX_MANIFEST_ENTRIES];
+  static ManifestEntry entries[MAX_MANIFEST_ENTRIES];
   const size_t count =
       parseManifest(remoteManifest, entries, MAX_MANIFEST_ENTRIES);
   if (count == 0) return false;
@@ -589,6 +589,7 @@ bool initGameAssets() {
 bool ensureGameAssets(TFT_eSPI& display) {
   progressScreenReady = false;
   progressStatus = "";
+  drawAssetProgress(display, "Connecting to game files...", 0, 0);
   while (true) {
     if (!filesystemReady && !initGameAssets()) {
       drawAssetProgress(display, "Storage unavailable - retrying", 0, 0);
@@ -625,7 +626,7 @@ bool ensureGameAssets(TFT_eSPI& display) {
 
 bool loadFlappyAssets(FlappyAssets& assets, bool night) {
   assets.release();
-  ManifestEntry entries[MAX_MANIFEST_ENTRIES];
+  static ManifestEntry entries[MAX_MANIFEST_ENTRIES];
   size_t count = 0;
   if (!loadManifestEntries(entries, count)) return false;
 
@@ -651,7 +652,7 @@ bool loadFlappyAssets(FlappyAssets& assets, bool night) {
 
 bool loadSuperFlashyAssets(SuperFlashyAssets& assets) {
   assets.release();
-  ManifestEntry entries[MAX_MANIFEST_ENTRIES];
+  static ManifestEntry entries[MAX_MANIFEST_ENTRIES];
   size_t count = 0;
   if (!loadManifestEntries(entries, count)) return false;
 

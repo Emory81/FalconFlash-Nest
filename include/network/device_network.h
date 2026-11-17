@@ -27,6 +27,8 @@ struct OrderStatus {
   String orderPhoto;
 };
 
-DevicePriceStatus fetchDevicePrice(uint8_t buttonNumber, String& priceText);
-bool submitDeviceOrder(uint8_t buttonNumber, String& orderId);
+DevicePriceStatus fetchDevicePrice(uint8_t buttonNumber, String& priceText,
+                                   uint8_t& savedPickupLocationMask);
+bool submitDeviceOrder(uint8_t buttonNumber, uint8_t pickupLocationMask,
+                       String& eventId, String& orderId);
 bool fetchOrderStatus(const String& orderId, OrderStatus& status);

@@ -39,6 +39,7 @@ constexpr char PAIRING_STATUS_PATH[] = "/nest/device/pairing-status";
 constexpr char PRICE_PATH[] = "/nest/device/price";
 constexpr char ORDER_PATH[] = "/nest/device/order";
 constexpr char ORDER_STATUS_PATH[] = "/order_status";
+constexpr uint8_t PICKUP_LOCATION_COUNT = 5;
 constexpr uint32_t WIFI_RETRY_MS = 10000;
 constexpr uint32_t WIFI_HINT_FALLBACK_MS = 2000;
 constexpr uint32_t PAIRING_POLL_MS = 2000;
@@ -113,6 +114,46 @@ String extractJsonNumber(const String& json, const char* key) {
     ++valueEnd;
   }
   return json.substring(valueStart, valueEnd);
+}
+
+uint8_t extractJsonIdArrayMask(const String& json, const char* key) {
+  const String keyToken = "\"" + String(key) + "\"";
+  const int keyStart = json.indexOf(keyToken);
+  if (keyStart < 0) {
+    return 0;
+  }
+
+  const int colon = json.indexOf(':', keyStart + keyToken.length());
+  const int arrayStart = colon < 0 ? -1 : json.indexOf('[', colon + 1);
+  if (arrayStart < 0) {
+    return 0;
+  }
+  const int arrayEnd = json.indexOf(']', arrayStart + 1);
+  if (arrayEnd < 0) {
+    return 0;
+  }
+
+  uint8_t mask = 0;
+  int cursor = arrayStart + 1;
+  while (cursor < arrayEnd) {
+    while (cursor < arrayEnd && !isDigit(json[cursor])) {
+      ++cursor;
+    }
+    if (cursor >= arrayEnd) {
+      break;
+    }
+
+    int valueEnd = cursor;
+    while (valueEnd < arrayEnd && isDigit(json[valueEnd])) {
+      ++valueEnd;
+    }
+    const int locationId = json.substring(cursor, valueEnd).toInt();
+    if (locationId >= 1 && locationId <= PICKUP_LOCATION_COUNT) {
+      mask |= static_cast<uint8_t>(1U << (locationId - 1));
+    }
+    cursor = valueEnd;
+  }
+  return mask;
 }
 
 String extractJsonScalar(const String& json, const char* key) {
@@ -596,7 +637,9 @@ bool ensureDevicePaired(TFT_eSPI& display) {
   }
 }
 
-DevicePriceStatus fetchDevicePrice(uint8_t buttonNumber, String& priceText) {
+DevicePriceStatus fetchDevicePrice(uint8_t buttonNumber, String& priceText,
+                                   uint8_t& savedPickupLocationMask) {
+  savedPickupLocationMask = 0;
   if (buttonNumber < 1 || buttonNumber > 4) {
     return DevicePriceStatus::Unavailable;
   }
@@ -643,6 +686,13 @@ DevicePriceStatus fetchDevicePrice(uint8_t buttonNumber, String& priceText) {
     return DevicePriceStatus::Unavailable;
   }
 
+  savedPickupLocationMask =
+      extractJsonIdArrayMask(response, "saved_pickup_location_ids");
+  if (savedPickupLocationMask == 0) {
+    savedPickupLocationMask =
+        extractJsonIdArrayMask(response, "pickup_location_ids");
+  }
+
   char formattedPrice[16];
   snprintf(formattedPrice, sizeof(formattedPrice), "$%.2f",
            amount.toFloat());
@@ -650,7 +700,8 @@ DevicePriceStatus fetchDevicePrice(uint8_t buttonNumber, String& priceText) {
   return DevicePriceStatus::Success;
 }
 
-bool submitDeviceOrder(uint8_t buttonNumber, String& orderId) {
+bool submitDeviceOrder(uint8_t buttonNumber, uint8_t pickupLocationMask,
+                       String& eventId, String& orderId) {
   orderId = String();
   if (buttonNumber < 1 || buttonNumber > 4) {
     return false;
@@ -672,10 +723,28 @@ bool submitDeviceOrder(uint8_t buttonNumber, String& orderId) {
     return false;
   }
 
-  const String eventId = nextEventId();
-  const String body =
-      "{\"button_number\":" + String(buttonNumber) +
-      ",\"event_id\":\"" + eventId + "\"}";
+  if (eventId.length() == 0) {
+    eventId = nextEventId();
+  }
+
+  String body = "{\"button_number\":" + String(buttonNumber);
+  if (pickupLocationMask != 0) {
+    body += ",\"pickup_location_ids\":[";
+    bool firstLocation = true;
+    for (uint8_t location = 1; location <= PICKUP_LOCATION_COUNT;
+         ++location) {
+      if ((pickupLocationMask & (1U << (location - 1))) == 0) {
+        continue;
+      }
+      if (!firstLocation) {
+        body += ",";
+      }
+      body += String(location);
+      firstLocation = false;
+    }
+    body += "]";
+  }
+  body += ",\"event_id\":\"" + eventId + "\"}";
   String response;
   const int status = postJson(ORDER_PATH, body, false, token, response);
   if (status < 200 || status >= 300) {

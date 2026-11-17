@@ -55,6 +55,26 @@ constexpr uint32_t DELIVERY_SOUND_GAP_MS = 1000;
 constexpr uint32_t POST_DELIVERY_STANDBY_MS = 15000;
 constexpr uint8_t PRICE_FETCH_RETRIES = 3;
 constexpr uint32_t PRICE_FETCH_RETRY_DELAY_MS = 500;
+constexpr uint8_t PICKUP_LOCATION_COUNT = 5;
+constexpr int16_t PICKUP_MENU_TILE_WIDTH = 148;
+constexpr int16_t PICKUP_MENU_TILE_HEIGHT = 48;
+constexpr int16_t PICKUP_MENU_GAP = 8;
+constexpr int16_t PICKUP_MENU_LEFT = 8;
+constexpr int16_t PICKUP_MENU_TOP = 42;
+
+struct PickupLocationDisplay {
+  const char* shortName;
+  const char* lineOne;
+  const char* lineTwo;
+};
+
+constexpr PickupLocationDisplay PICKUP_LOCATIONS[PICKUP_LOCATION_COUNT] = {
+    {"Left Side", "Milkshakes, Acai", "bowls, etc."},
+    {"Middle", "Burgers etc.", ""},
+    {"Right Side", "Pasta etc.", ""},
+    {"Back Side", "Coffee, Specialty", "drinks etc."},
+    {"uCreate", "", ""},
+};
 
 TFT_eSPI tft;
 
@@ -80,7 +100,27 @@ void drawSplashScreen() {
       logoY + FALCON_LOGO_HEIGHT + LOGO_TEXT_GAP + textHeight / 2);
 }
 
-void drawPriceHeader(int16_t centerX, const char* priceText) {
+String pickupLocationSummary(uint8_t pickupLocationMask) {
+  if (pickupLocationMask == 0) {
+    return String("Saved default");
+  }
+
+  String summary;
+  for (uint8_t index = 0; index < PICKUP_LOCATION_COUNT; ++index) {
+    if ((pickupLocationMask & (1U << index)) == 0) {
+      continue;
+    }
+    if (summary.length() > 0) {
+      summary += " + ";
+    }
+    summary += PICKUP_LOCATIONS[index].shortName;
+  }
+  return summary.length() > 0 ? summary : String("Saved default");
+}
+
+void drawPriceHeader(int16_t centerX, const char* priceText,
+                     uint8_t pickupLocationMask,
+                     uint8_t savedPickupLocationMask) {
   tft.fillScreen(TFT_BLACK);
 
   tft.setTextFont(1);
@@ -88,6 +128,12 @@ void drawPriceHeader(int16_t centerX, const char* priceText) {
   tft.setTextColor(TFT_WHITE, TFT_BLACK);
   tft.setTextDatum(TC_DATUM);
   tft.drawString(priceText, centerX, 20);
+  tft.setTextSize(1);
+  const uint8_t displayMask =
+      pickupLocationMask != 0 ? pickupLocationMask : savedPickupLocationMask;
+  const String pickupText =
+      String("Pickup: ") + pickupLocationSummary(displayMask);
+  tft.drawString(pickupText.c_str(), centerX, 45);
 }
 
 void drawPriceUnavailable() {
@@ -116,10 +162,12 @@ void drawButtonUnarmed(uint8_t buttonNumber) {
 }
 
 DevicePriceStatus fetchPriceWithRetry(uint8_t buttonNumber,
-                                      String& priceText) {
+                                      String& priceText,
+                                      uint8_t& savedPickupLocationMask) {
   DevicePriceStatus status = DevicePriceStatus::Unavailable;
   for (uint8_t attempt = 0; attempt < PRICE_FETCH_RETRIES; ++attempt) {
-    status = fetchDevicePrice(buttonNumber, priceText);
+    status =
+        fetchDevicePrice(buttonNumber, priceText, savedPickupLocationMask);
     if (status != DevicePriceStatus::Unavailable ||
         attempt + 1 >= PRICE_FETCH_RETRIES) {
       return status;
@@ -173,7 +221,7 @@ void drawCancelHint(int16_t centerX) {
   tft.setTextSize(1);
   tft.setTextColor(TFT_WHITE, TFT_BLACK);
   tft.setTextDatum(BC_DATUM);
-  tft.drawString("Press any button to cancel", centerX,
+  tft.drawString("BTN3: change pickup", centerX,
                  tft.height() - CANCEL_HINT_BOTTOM_MARGIN);
 }
 
@@ -647,13 +695,109 @@ void showOrderStatus(const String& orderId, bool demoMode) {
   enterStandby(cancelled);
 }
 
+void drawPickupLocationMenu(uint8_t selectedMask, uint8_t activeRow,
+                            uint8_t activeColumn) {
+  tft.fillScreen(TFT_BLACK);
+  tft.setTextFont(1);
+  tft.setTextSize(2);
+  tft.setTextColor(TFT_WHITE, TFT_BLACK);
+  tft.setTextDatum(TC_DATUM);
+  tft.drawString("Pickup locations", tft.width() / 2, 10);
+
+  tft.setTextSize(1);
+  for (uint8_t index = 0; index < PICKUP_LOCATION_COUNT; ++index) {
+    const int16_t column = index % 2;
+    const int16_t row = index / 2;
+    const int16_t x =
+        PICKUP_MENU_LEFT + column * (PICKUP_MENU_TILE_WIDTH + PICKUP_MENU_GAP);
+    const int16_t y =
+        PICKUP_MENU_TOP + row * (PICKUP_MENU_TILE_HEIGHT + PICKUP_MENU_GAP);
+    const bool selected = (selectedMask & (1U << index)) != 0;
+
+    tft.fillRoundRect(x, y, PICKUP_MENU_TILE_WIDTH, PICKUP_MENU_TILE_HEIGHT,
+                      7, selected ? TFT_DARKGREY : TFT_BLACK);
+    tft.drawRoundRect(x, y, PICKUP_MENU_TILE_WIDTH, PICKUP_MENU_TILE_HEIGHT,
+                      7, TFT_WHITE);
+
+    tft.setTextColor(TFT_WHITE, selected ? TFT_DARKGREY : TFT_BLACK);
+    tft.setTextDatum(MC_DATUM);
+    const PickupLocationDisplay& location = PICKUP_LOCATIONS[index];
+    if (location.lineTwo[0] == '\0') {
+      tft.drawString(location.shortName, x + PICKUP_MENU_TILE_WIDTH / 2,
+                     y + 14);
+      tft.drawString(location.lineOne, x + PICKUP_MENU_TILE_WIDTH / 2,
+                     y + 33);
+    } else {
+      tft.drawString(location.shortName, x + PICKUP_MENU_TILE_WIDTH / 2,
+                     y + 9);
+      tft.drawString(location.lineOne, x + PICKUP_MENU_TILE_WIDTH / 2,
+                     y + 24);
+      tft.drawString(location.lineTwo, x + PICKUP_MENU_TILE_WIDTH / 2,
+                     y + 38);
+    }
+  }
+
+  const int16_t activeX =
+      PICKUP_MENU_LEFT + activeColumn * (PICKUP_MENU_TILE_WIDTH + PICKUP_MENU_GAP);
+  const int16_t activeY =
+      PICKUP_MENU_TOP + activeRow * (PICKUP_MENU_TILE_HEIGHT + PICKUP_MENU_GAP);
+  tft.drawRoundRect(activeX + 2, activeY + 2, PICKUP_MENU_TILE_WIDTH - 4,
+                    PICKUP_MENU_TILE_HEIGHT - 4, 5, TFT_LIGHTGREY);
+
+  tft.setTextColor(TFT_WHITE, TFT_BLACK);
+  tft.setTextDatum(BC_DATUM);
+  tft.drawString("BTN1 row   BTN2 column   BTN3 select   BTN4 done",
+                 tft.width() / 2, tft.height() - 4);
+}
+
+uint8_t firstPickupLocationIndex(uint8_t mask) {
+  for (uint8_t index = 0; index < PICKUP_LOCATION_COUNT; ++index) {
+    if ((mask & (1U << index)) != 0) {
+      return index;
+    }
+  }
+  return 0;
+}
+
+uint8_t selectPickupLocations(uint8_t initialMask) {
+  uint8_t selectedMask = initialMask;
+  const uint8_t firstIndex = firstPickupLocationIndex(initialMask);
+  uint8_t activeRow = firstIndex / 2;
+  uint8_t activeColumn = firstIndex % 2;
+
+  while (true) {
+    drawPickupLocationMenu(selectedMask, activeRow, activeColumn);
+    const Button button = readButtonEvent();
+    if (button == Button::Button1) {
+      activeRow = (activeRow + 1) % 3;
+      if (activeRow == 2) {
+        activeColumn = 0;
+      }
+    } else if (button == Button::Button2) {
+      if (activeRow < 2) {
+        activeColumn = (activeColumn + 1) % 2;
+      }
+    } else if (button == Button::Button3) {
+      const uint8_t activeIndex = activeRow * 2 + activeColumn;
+      selectedMask ^= static_cast<uint8_t>(1U << activeIndex);
+    } else if (button == Button::Button4) {
+      waitForButtonRelease();
+      return selectedMask;
+    }
+    delay(10);
+  }
+}
+
 void runCountdownTimer(const char* priceText, bool demoMode,
-                       uint8_t orderButtonNumber) {
+                       uint8_t orderButtonNumber,
+                       uint8_t savedPickupLocationMask) {
   const int16_t centerX = tft.width() / 2;
   const int16_t centerY = TIMER_CENTER_Y;
-  const uint32_t startMs = millis();
+  uint32_t startMs = millis();
+  uint8_t pickupLocationMask = savedPickupLocationMask;
 
-  drawPriceHeader(centerX, priceText);
+  drawPriceHeader(centerX, priceText, pickupLocationMask,
+                  savedPickupLocationMask);
   drawFullTimerRing(centerX, centerY);
   drawTimerSeconds(centerX, centerY, 15);
   drawCancelHint(centerX);
@@ -666,7 +810,34 @@ void runCountdownTimer(const char* priceText, bool demoMode,
     if (elapsedMs >= COUNTDOWN_DURATION_MS) {
       break;
     }
-    if (readButtonEvent() != Button::None) {
+    const Button button = readButtonEvent();
+    if (button == Button::Button3) {
+      const uint32_t menuStartedAt = millis();
+      pickupLocationMask = selectPickupLocations(pickupLocationMask);
+      startMs += millis() - menuStartedAt;
+
+      drawPriceHeader(centerX, priceText, pickupLocationMask,
+                      savedPickupLocationMask);
+      drawFullTimerRing(centerX, centerY);
+      const uint32_t currentElapsedMs = millis() - startMs;
+      const float currentDegrees =
+          360.0f *
+          (currentElapsedMs / static_cast<float>(COUNTDOWN_DURATION_MS));
+      eraseTimerArcSegment(centerX, centerY, 0.0f,
+                           min(currentDegrees, 360.0f));
+      erasedDegrees = min(currentDegrees, 360.0f);
+      clearTimerText(centerX, centerY);
+      const uint32_t currentRemainingMs =
+          COUNTDOWN_DURATION_MS > currentElapsedMs
+              ? COUNTDOWN_DURATION_MS - currentElapsedMs
+              : 0;
+      lastSecondsLeft =
+          static_cast<uint8_t>((currentRemainingMs + 999) / 1000);
+      drawTimerSeconds(centerX, centerY, lastSecondsLeft);
+      drawCancelHint(centerX);
+      continue;
+    }
+    if (button != Button::None) {
       waitForButtonRelease();
       enterStandby(true);
     }
@@ -694,7 +865,11 @@ void runCountdownTimer(const char* priceText, bool demoMode,
   eraseTimerArcSegment(centerX, centerY, erasedDegrees, 360.0f);
   if (!demoMode) {
     String orderId;
-    while (!submitDeviceOrder(orderButtonNumber, orderId)) {
+    String eventId;
+    const uint8_t pickupOverrideMask =
+        pickupLocationMask == savedPickupLocationMask ? 0 : pickupLocationMask;
+    while (!submitDeviceOrder(orderButtonNumber, pickupOverrideMask, eventId,
+                              orderId)) {
       drawOrderFailure();
       delay(1000);
     }
@@ -730,19 +905,22 @@ void setup() {
   }
 
   if (demoMode) {
-    runCountdownTimer("DEMO $4.25", true, 0);
+    runCountdownTimer("DEMO $4.25", true, 0, 0);
     return;
   }
 
   ensureDevicePaired(tft);
   String priceText;
+  uint8_t savedPickupLocationMask = 0;
   const uint8_t orderButtonNumber = static_cast<uint8_t>(wakeButton);
   DevicePriceStatus priceStatus =
-      fetchPriceWithRetry(orderButtonNumber, priceText);
+      fetchPriceWithRetry(orderButtonNumber, priceText,
+                          savedPickupLocationMask);
   if (priceStatus == DevicePriceStatus::NeedsPairing) {
     // The server rejected the saved token, so pair this device again.
     ensureDevicePaired(tft);
-    priceStatus = fetchPriceWithRetry(orderButtonNumber, priceText);
+    priceStatus = fetchPriceWithRetry(orderButtonNumber, priceText,
+                                      savedPickupLocationMask);
   }
   if (priceStatus != DevicePriceStatus::Success) {
     if (priceStatus == DevicePriceStatus::Unarmed) {
@@ -753,7 +931,8 @@ void setup() {
     delay(2000);
     enterStandby(false);
   }
-  runCountdownTimer(priceText.c_str(), false, orderButtonNumber);
+  runCountdownTimer(priceText.c_str(), false, orderButtonNumber,
+                    savedPickupLocationMask);
 }
 
 void loop() {

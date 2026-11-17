@@ -4,8 +4,8 @@
 
 #include <cmath>
 
-#include "audio_helper.h"
-#include "button_input.h"
+#include "audio/audio_helper.h"
+#include "input/button_input.h"
 #include "game_assets.h"
 #include "super_flashy_levels.h"
 

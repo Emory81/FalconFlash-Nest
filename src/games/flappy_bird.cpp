@@ -1,4 +1,4 @@
-#include "flappy_bird.h"
+#include "games/flappy_bird.h"
 
 #include <Arduino.h>
 
@@ -6,8 +6,8 @@
 #include <cstdio>
 #include <cstring>
 
-#include "audio_helper.h"
-#include "button_input.h"
+#include "audio/audio_helper.h"
+#include "input/button_input.h"
 #include "game_assets.h"
 #include "leaderboard.h"
 

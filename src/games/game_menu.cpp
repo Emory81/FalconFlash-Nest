@@ -1,11 +1,11 @@
-#include "game_menu.h"
+#include "games/game_menu.h"
 
 #include <Arduino.h>
 
-#include "button_input.h"
-#include "flappy_bird.h"
+#include "input/button_input.h"
+#include "games/flappy_bird.h"
 #include "game_assets.h"
-#include "guitar_hero.h"
+#include "games/guitar_hero.h"
 #include "super_flashy_birds.h"
 
 namespace {

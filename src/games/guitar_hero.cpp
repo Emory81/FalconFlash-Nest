@@ -1,11 +1,11 @@
-#include "guitar_hero.h"
+#include "games/guitar_hero.h"
 
 #include <Arduino.h>
 
 #include <cstdio>
 
-#include "audio_helper.h"
-#include "button_input.h"
+#include "audio/audio_helper.h"
+#include "input/button_input.h"
 
 namespace {
 constexpr uint8_t LANE_COUNT = 4;

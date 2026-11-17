@@ -23,6 +23,8 @@ struct OrderStatus {
   String orderPlacedAt;
   String customerOrderPlacedAt;
   bool flasherAssigned;
+  String flasherName;
+  String pickedUpAt;
   String deliveredAt;
   String orderPhoto;
 };

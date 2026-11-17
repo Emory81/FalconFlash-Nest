@@ -248,15 +248,14 @@ bool detectDemoMode() {
   }
 }
 
-void drawOrderFailure() {
+void drawProcessingOrder() {
   tft.fillScreen(TFT_BLACK);
   tft.setTextFont(1);
   tft.setTextSize(2);
   tft.setTextColor(TFT_WHITE, TFT_BLACK);
   tft.setTextDatum(MC_DATUM);
-  tft.drawString("Order failed", tft.width() / 2, 92);
-  tft.setTextSize(1);
-  tft.drawString("Retrying selected order...", tft.width() / 2, 132);
+  tft.drawString("Processing your order", tft.width() / 2,
+                 tft.height() / 2);
 }
 
 void drawThankYouBlock(TFT_eSPI& display, int16_t x, int16_t thankY,
@@ -372,29 +371,57 @@ void drawGameButton(TFT_eSPI& display) {
                      GAME_BUTTON_Y + GAME_BUTTON_H / 2);
 }
 
-String orderStatusLabel(const OrderStatus& status) {
-  if (status.deliveredAt.length() > 0) {
-    return String("Delivered");
+String formatOrderTime(const String& timestamp) {
+  int timeSeparator = timestamp.indexOf('T');
+  if (timeSeparator < 0) {
+    timeSeparator = timestamp.indexOf(' ');
+  }
+  if (timeSeparator < 0 || timeSeparator + 5 >= timestamp.length()) {
+    return timestamp;
   }
 
-  String normalizedStatus = status.orderStatus;
-  normalizedStatus.toLowerCase();
-  if (normalizedStatus == "0") {
-    return String("Order placed");
+  const int hourStart = timeSeparator + 1;
+  const int minuteStart = hourStart + 3;
+  if (!isDigit(timestamp[hourStart]) || !isDigit(timestamp[hourStart + 1]) ||
+      !isDigit(timestamp[minuteStart]) ||
+      !isDigit(timestamp[minuteStart + 1])) {
+    return timestamp;
   }
-  if (normalizedStatus == "1") {
-    return String("Flasher assigned");
+
+  const int hour = timestamp.substring(hourStart, hourStart + 2).toInt();
+  const int minute =
+      timestamp.substring(minuteStart, minuteStart + 2).toInt();
+  if (hour > 23 || minute > 59) {
+    return timestamp;
   }
-  if (normalizedStatus == "2") {
-    return String("Picked up");
+
+  // The API timestamps are UTC (their trailing Z means UTC). Display them
+  // in fixed Eastern Standard Time as requested.
+  int easternHour = hour - 5;
+  if (easternHour < 0) {
+    easternHour += 24;
   }
-  if (normalizedStatus == "3") {
-    return String("Delivered");
+  const int displayHour = easternHour % 12 == 0 ? 12 : easternHour % 12;
+  char formattedTime[12];
+  snprintf(formattedTime, sizeof(formattedTime), "%d:%02d %s", displayHour,
+           minute, easternHour >= 12 ? "PM" : "AM");
+  return String(formattedTime);
+}
+
+String flyerAssignedLabel(const OrderStatus& status) {
+  if (status.flasherName.length() == 0) {
+    return String("Flyer Assigned");
   }
-  if (normalizedStatus.length() == 0) {
-    return String("Waiting for status...");
+
+  for (uint16_t index = 0; index < status.flasherName.length(); ++index) {
+    if (isAlpha(status.flasherName[index])) {
+      String label;
+      label += status.flasherName[index];
+      label += ". Assigned";
+      return label;
+    }
   }
-  return status.orderStatus;
+  return String("Flyer Assigned");
 }
 
 uint8_t orderStatusStage(const OrderStatus& status) {
@@ -404,7 +431,8 @@ uint8_t orderStatusStage(const OrderStatus& status) {
       normalizedStatus.indexOf("deliver") >= 0) {
     return 3;
   }
-  if (normalizedStatus == "2" || normalizedStatus.indexOf("pickup") >= 0) {
+  if (status.pickedUpAt.length() > 0 || normalizedStatus == "2" ||
+      normalizedStatus.indexOf("pickup") >= 0) {
     return 2;
   }
   if (status.flasherAssigned || normalizedStatus == "1" ||
@@ -418,20 +446,30 @@ String orderStageDescription(const OrderStatus& status, uint8_t stage) {
   switch (stage) {
     case 0:
       if (status.orderPlacedAt.length() > 0) {
-        return String("Placed ") + status.orderPlacedAt;
+        return String("Placed ") + formatOrderTime(status.orderPlacedAt);
       }
       if (status.customerOrderPlacedAt.length() > 0) {
-        return String("Placed ") + status.customerOrderPlacedAt;
+        return String("Placed ") +
+               formatOrderTime(status.customerOrderPlacedAt);
       }
       return String("Order placed");
     case 1:
-      return status.flasherAssigned ? String("Flasher assigned")
+      return status.flasherAssigned ? flyerAssignedLabel(status)
                                     : String("Awaiting flasher");
     case 2:
-      return String("Order picked up");
+      if (status.pickedUpAt.length() > 0 &&
+          formatOrderTime(status.pickedUpAt) != status.pickedUpAt) {
+        const String flyerName =
+            status.flasherName.length() > 0 ? status.flasherName : "Flyer";
+        return flyerName + " picked up order at " +
+               formatOrderTime(status.pickedUpAt);
+      }
+      return status.flasherName.length() > 0
+                 ? status.flasherName + " picked up order"
+                 : String("Order picked up");
     default:
       if (status.deliveredAt.length() > 0) {
-        return String("Delivered ") + status.deliveredAt;
+        return String("Delivered at ") + formatOrderTime(status.deliveredAt);
       }
       return String("Delivered");
   }
@@ -451,11 +489,6 @@ void drawOrderTimelineFrame(TFT_eSPI& display, const String& orderId,
       status.orderNumber.length() > 0 ? status.orderNumber : orderId;
   const String orderLabel = String("Order #") + displayOrderId;
   display.drawString(orderLabel.c_str(), 12, 7);
-
-  const String statusText =
-      hasStatus ? orderStatusLabel(status) : String("Waiting for status...");
-  display.setTextDatum(TR_DATUM);
-  display.drawString(statusText.c_str(), display.width() - 12, 7);
 
   const int16_t firstY = ORDER_TIMELINE_FIRST_Y - scrollOffset;
   const int16_t lastY =
@@ -612,6 +645,7 @@ void setDemoOrderStage(OrderStatus& status, uint8_t stage) {
   status.orderStatus = String(stage);
   if (stage >= 1) {
     status.flasherAssigned = true;
+    status.flasherName = "Demo Flyer";
   }
   if (stage >= 3) {
     status.deliveredAt = "Demo delivered";
@@ -695,16 +729,16 @@ void showOrderStatus(const String& orderId, bool demoMode) {
   enterStandby(cancelled);
 }
 
-void drawPickupLocationMenu(uint8_t selectedMask, uint8_t activeRow,
-                            uint8_t activeColumn) {
-  tft.fillScreen(TFT_BLACK);
-  tft.setTextFont(1);
-  tft.setTextSize(2);
-  tft.setTextColor(TFT_WHITE, TFT_BLACK);
-  tft.setTextDatum(TC_DATUM);
-  tft.drawString("Pickup locations", tft.width() / 2, 10);
+void drawPickupLocationMenu(TFT_eSPI& display, uint8_t selectedMask,
+                            uint8_t activeRow, uint8_t activeColumn) {
+  display.fillScreen(TFT_BLACK);
+  display.setTextFont(1);
+  display.setTextSize(2);
+  display.setTextColor(TFT_WHITE, TFT_BLACK);
+  display.setTextDatum(TC_DATUM);
+  display.drawString("Pickup locations", display.width() / 2, 10);
 
-  tft.setTextSize(1);
+  display.setTextSize(1);
   for (uint8_t index = 0; index < PICKUP_LOCATION_COUNT; ++index) {
     const int16_t column = index % 2;
     const int16_t row = index / 2;
@@ -714,26 +748,26 @@ void drawPickupLocationMenu(uint8_t selectedMask, uint8_t activeRow,
         PICKUP_MENU_TOP + row * (PICKUP_MENU_TILE_HEIGHT + PICKUP_MENU_GAP);
     const bool selected = (selectedMask & (1U << index)) != 0;
 
-    tft.fillRoundRect(x, y, PICKUP_MENU_TILE_WIDTH, PICKUP_MENU_TILE_HEIGHT,
-                      7, selected ? TFT_DARKGREY : TFT_BLACK);
-    tft.drawRoundRect(x, y, PICKUP_MENU_TILE_WIDTH, PICKUP_MENU_TILE_HEIGHT,
-                      7, TFT_WHITE);
+    display.fillRoundRect(x, y, PICKUP_MENU_TILE_WIDTH, PICKUP_MENU_TILE_HEIGHT,
+                          7, selected ? TFT_DARKGREY : TFT_BLACK);
+    display.drawRoundRect(x, y, PICKUP_MENU_TILE_WIDTH, PICKUP_MENU_TILE_HEIGHT,
+                          7, TFT_WHITE);
 
-    tft.setTextColor(TFT_WHITE, selected ? TFT_DARKGREY : TFT_BLACK);
-    tft.setTextDatum(MC_DATUM);
+    display.setTextColor(TFT_WHITE, selected ? TFT_DARKGREY : TFT_BLACK);
+    display.setTextDatum(MC_DATUM);
     const PickupLocationDisplay& location = PICKUP_LOCATIONS[index];
     if (location.lineTwo[0] == '\0') {
-      tft.drawString(location.shortName, x + PICKUP_MENU_TILE_WIDTH / 2,
-                     y + 14);
-      tft.drawString(location.lineOne, x + PICKUP_MENU_TILE_WIDTH / 2,
-                     y + 33);
+      display.drawString(location.shortName, x + PICKUP_MENU_TILE_WIDTH / 2,
+                         y + 14);
+      display.drawString(location.lineOne, x + PICKUP_MENU_TILE_WIDTH / 2,
+                         y + 33);
     } else {
-      tft.drawString(location.shortName, x + PICKUP_MENU_TILE_WIDTH / 2,
-                     y + 9);
-      tft.drawString(location.lineOne, x + PICKUP_MENU_TILE_WIDTH / 2,
-                     y + 24);
-      tft.drawString(location.lineTwo, x + PICKUP_MENU_TILE_WIDTH / 2,
-                     y + 38);
+      display.drawString(location.shortName, x + PICKUP_MENU_TILE_WIDTH / 2,
+                         y + 9);
+      display.drawString(location.lineOne, x + PICKUP_MENU_TILE_WIDTH / 2,
+                         y + 24);
+      display.drawString(location.lineTwo, x + PICKUP_MENU_TILE_WIDTH / 2,
+                         y + 38);
     }
   }
 
@@ -741,13 +775,13 @@ void drawPickupLocationMenu(uint8_t selectedMask, uint8_t activeRow,
       PICKUP_MENU_LEFT + activeColumn * (PICKUP_MENU_TILE_WIDTH + PICKUP_MENU_GAP);
   const int16_t activeY =
       PICKUP_MENU_TOP + activeRow * (PICKUP_MENU_TILE_HEIGHT + PICKUP_MENU_GAP);
-  tft.drawRoundRect(activeX + 2, activeY + 2, PICKUP_MENU_TILE_WIDTH - 4,
-                    PICKUP_MENU_TILE_HEIGHT - 4, 5, TFT_LIGHTGREY);
+  display.drawRoundRect(activeX + 2, activeY + 2, PICKUP_MENU_TILE_WIDTH - 4,
+                        PICKUP_MENU_TILE_HEIGHT - 4, 5, TFT_LIGHTGREY);
 
-  tft.setTextColor(TFT_WHITE, TFT_BLACK);
-  tft.setTextDatum(BC_DATUM);
-  tft.drawString("BTN1 row   BTN2 column   BTN3 select   BTN4 done",
-                 tft.width() / 2, tft.height() - 4);
+  display.setTextColor(TFT_WHITE, TFT_BLACK);
+  display.setTextDatum(BC_DATUM);
+  display.drawString("BTN1 row   BTN2 column   BTN3 select   BTN4 done",
+                     display.width() / 2, display.height() - 4);
 }
 
 uint8_t firstPickupLocationIndex(uint8_t mask) {
@@ -764,24 +798,30 @@ uint8_t selectPickupLocations(uint8_t initialMask) {
   const uint8_t firstIndex = firstPickupLocationIndex(initialMask);
   uint8_t activeRow = firstIndex / 2;
   uint8_t activeColumn = firstIndex % 2;
+  TFT_eSprite menuFrame(&tft);
+  menuFrame.setColorDepth(8);
+  const bool useSprite = menuFrame.createSprite(tft.width(), tft.height());
 
   while (true) {
-    drawPickupLocationMenu(selectedMask, activeRow, activeColumn);
+    if (useSprite) {
+      drawPickupLocationMenu(menuFrame, selectedMask, activeRow, activeColumn);
+      menuFrame.pushSprite(0, 0);
+    } else {
+      drawPickupLocationMenu(tft, selectedMask, activeRow, activeColumn);
+    }
     const Button button = readButtonEvent();
     if (button == Button::Button1) {
-      activeRow = (activeRow + 1) % 3;
-      if (activeRow == 2) {
-        activeColumn = 0;
-      }
+      const uint8_t rowCount = activeColumn == 0 ? 3 : 2;
+      activeRow = (activeRow + 1) % rowCount;
     } else if (button == Button::Button2) {
-      if (activeRow < 2) {
-        activeColumn = (activeColumn + 1) % 2;
-      }
+      activeColumn = (activeColumn + 1) % 2;
+      activeRow = 0;
     } else if (button == Button::Button3) {
       const uint8_t activeIndex = activeRow * 2 + activeColumn;
       selectedMask ^= static_cast<uint8_t>(1U << activeIndex);
     } else if (button == Button::Button4) {
       waitForButtonRelease();
+      menuFrame.deleteSprite();
       return selectedMask;
     }
     delay(10);
@@ -812,6 +852,7 @@ void runCountdownTimer(const char* priceText, bool demoMode,
     }
     const Button button = readButtonEvent();
     if (button == Button::Button3) {
+      waitForButtonRelease();
       const uint32_t menuStartedAt = millis();
       pickupLocationMask = selectPickupLocations(pickupLocationMask);
       startMs += millis() - menuStartedAt;
@@ -868,9 +909,9 @@ void runCountdownTimer(const char* priceText, bool demoMode,
     String eventId;
     const uint8_t pickupOverrideMask =
         pickupLocationMask == savedPickupLocationMask ? 0 : pickupLocationMask;
+    drawProcessingOrder();
     while (!submitDeviceOrder(orderButtonNumber, pickupOverrideMask, eventId,
                               orderId)) {
-      drawOrderFailure();
       delay(1000);
     }
     playThankYouAnimation();

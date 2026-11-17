@@ -788,6 +788,26 @@ bool fetchOrderStatus(const String& orderId, OrderStatus& status) {
       extractJsonScalar(response, "flasher_assigned");
   status.flasherAssigned =
       flasherAssigned.length() > 0 && flasherAssigned != "false";
+  status.flasherName = extractJsonScalar(response, "flasher_name");
+  if (status.flasherName.length() == 0) {
+    status.flasherName = extractJsonScalar(response, "flyer_name");
+  }
+  if (status.flasherName.length() == 0) {
+    status.flasherName = extractJsonScalar(response, "flasher");
+  }
+  if (status.flasherName.length() == 0 &&
+      flasherAssigned != "true" && flasherAssigned != "false" &&
+      flasherAssigned != "0" && flasherAssigned != "1") {
+    status.flasherName = flasherAssigned;
+  }
+  status.pickedUpAt = extractJsonScalar(response, "picked_up_at");
+  if (status.pickedUpAt.length() == 0) {
+    status.pickedUpAt =
+        extractJsonScalar(response, "order_picked_up_at");
+  }
+  if (status.pickedUpAt.length() == 0) {
+    status.pickedUpAt = extractJsonScalar(response, "picked_up");
+  }
   status.deliveredAt = extractJsonScalar(response, "delivered_at");
   status.orderPhoto = extractJsonScalar(response, "order_photo");
 
@@ -795,5 +815,6 @@ bool fetchOrderStatus(const String& orderId, OrderStatus& status) {
          status.orderNumber.length() > 0 ||
          status.orderPlacedAt.length() > 0 ||
          status.customerOrderPlacedAt.length() > 0 ||
+         status.pickedUpAt.length() > 0 ||
          status.deliveredAt.length() > 0;
 }

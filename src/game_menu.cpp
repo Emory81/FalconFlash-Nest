@@ -17,9 +17,6 @@ constexpr int16_t TILE_RADIUS = 8;
 constexpr int16_t TILE_GAP = 8;
 constexpr int16_t TILE_LEFT = 8;
 constexpr int16_t TILE_TOP = 36;
-constexpr int16_t BACKGROUND_WIDTH = 320;
-constexpr int16_t BACKGROUND_HEIGHT = 240;
-constexpr uint16_t SPRITE_TRANSPARENT = 0xF81F;
 
 constexpr const char* GAME_NAMES[] = {
     "Flappy Falcon", "Guitar Hero", "Pong", "Brick Breaker", "Runner",
@@ -69,8 +66,8 @@ void drawRunnerIcon(TFT_eSPI& display, int16_t x, int16_t y) {
   display.drawLine(x + 8, y + 41, x + 65, y + 41, TFT_GREEN);
 }
 
-void drawGameIcon(TFT_eSPI& display, uint8_t index, int16_t x, int16_t y,
-                  const SuperFlashyAssets* superAssets) {
+void drawGameIcon(TFT_eSPI& display, uint8_t index,
+                  const SuperFlashyAssets& superAssets, int16_t x, int16_t y) {
   switch (index) {
     case 1:
       drawGuitarIcon(display, x, y);
@@ -85,26 +82,24 @@ void drawGameIcon(TFT_eSPI& display, uint8_t index, int16_t x, int16_t y,
       drawRunnerIcon(display, x, y);
       break;
     default:
-      if (superAssets != nullptr) {
-        drawSuperFlashyBirdsIcon(display, *superAssets, x + 8, y);
-      } else {
-        drawPongIcon(display, x, y);
-      }
+      drawSuperFlashyBirdsIcon(display, superAssets, x + 8, y);
       break;
   }
 }
 
-void drawScaledFlappySprite(TFT_eSPI& display, int16_t x, int16_t y,
-                            int16_t size, const FlappyAssets& assets) {
+void drawScaledFlappySprite(TFT_eSPI& display,
+                            const FlappyAssets& flappyAssets, int16_t x,
+                            int16_t y, int16_t size) {
   for (int16_t destY = 0; destY < size; ++destY) {
     const int16_t sourceY =
-        destY * assets.birdBack.height / size;
+        destY * flappyAssets.birdBack.height / size;
     for (int16_t destX = 0; destX < size; ++destX) {
       const int16_t sourceX =
-          destX * assets.birdBack.width / size;
+          destX * flappyAssets.birdBack.width / size;
       const uint16_t color =
-          assets.birdBack.pixels()[sourceY * assets.birdBack.width + sourceX];
-      if (color != SPRITE_TRANSPARENT) {
+          flappyAssets.birdBack.pixels()[
+              sourceY * flappyAssets.birdBack.width + sourceX];
+      if (color != 0xF81F) {
         display.drawPixel(x + destX, y + destY, color);
       }
     }
@@ -132,21 +127,8 @@ void maskFlappyTileCorners(TFT_eSPI& display, int16_t x, int16_t y) {
   }
 }
 
-void drawFlappyTile(TFT_eSPI& display, int16_t x, int16_t y,
-                    bool selected, const FlappyAssets* assets) {
-  if (assets == nullptr) {
-    display.fillRoundRect(x, y, TILE_WIDTH, TILE_HEIGHT, TILE_RADIUS,
-                          MENU_TILE);
-    display.drawRoundRect(x, y, TILE_WIDTH, TILE_HEIGHT, TILE_RADIUS,
-                          selected ? TFT_YELLOW : TFT_WHITE);
-    display.setTextFont(1);
-    display.setTextSize(1);
-    display.setTextColor(TFT_WHITE, MENU_TILE);
-    display.setTextDatum(MC_DATUM);
-    display.drawString("Flappy Falcon", x + TILE_WIDTH / 2,
-                       y + TILE_HEIGHT / 2);
-    return;
-  }
+void drawFlappyTile(TFT_eSPI& display, const FlappyAssets& flappyAssets,
+                    int16_t x, int16_t y, bool selected) {
   TFT_eSprite tile(&display);
   tile.setColorDepth(8);
   if (!tile.createSprite(TILE_WIDTH, TILE_HEIGHT)) {
@@ -159,17 +141,19 @@ void drawFlappyTile(TFT_eSPI& display, int16_t x, int16_t y,
 
   uint8_t* const pixels = static_cast<uint8_t*>(tile.getPointer());
   const int16_t scaledWidth =
-      BACKGROUND_WIDTH * TILE_HEIGHT / BACKGROUND_HEIGHT;
+      flappyAssets.background.width * TILE_HEIGHT /
+      flappyAssets.background.height;
   const int16_t cropX = (scaledWidth - TILE_WIDTH) / 2;
   for (int16_t destY = 0; destY < TILE_HEIGHT; ++destY) {
     const int16_t sourceY =
-        destY * BACKGROUND_HEIGHT / TILE_HEIGHT;
+        destY * flappyAssets.background.height / TILE_HEIGHT;
     for (int16_t destX = 0; destX < TILE_WIDTH; ++destX) {
       const int16_t scaledX = destX + cropX;
       const int16_t sourceX =
-          scaledX * BACKGROUND_WIDTH / scaledWidth;
+          scaledX * flappyAssets.background.width / scaledWidth;
       pixels[destY * TILE_WIDTH + destX] =
-          assets->backgroundDay.data[sourceY * BACKGROUND_WIDTH + sourceX];
+          flappyAssets.background.data[
+              sourceY * flappyAssets.background.width + sourceX];
     }
   }
 
@@ -179,8 +163,8 @@ void drawFlappyTile(TFT_eSPI& display, int16_t x, int16_t y,
   const int16_t labelTop = labelBaseline - tile.fontHeight();
   const int16_t iconSize = static_cast<int16_t>(TILE_HEIGHT * 0.6f);
   const int16_t iconY = (labelTop - iconSize) / 2;
-  drawScaledFlappySprite(tile, (TILE_WIDTH - iconSize) / 2, iconY, iconSize,
-                         *assets);
+  drawScaledFlappySprite(tile, flappyAssets, (TILE_WIDTH - iconSize) / 2,
+                         iconY, iconSize);
 
   tile.setTextDatum(BC_DATUM);
   tile.setTextColor(TFT_BLACK);
@@ -205,12 +189,9 @@ void drawFlappyTile(TFT_eSPI& display, int16_t x, int16_t y,
   }
 }
 
-void drawMenu(TFT_eSPI& display, uint8_t selectedIndex) {
-  FlappyAssets flappyAssets;
-  const bool hasFlappyAssets = loadFlappyAssets(flappyAssets);
-  SuperFlashyAssets superAssets;
-  const bool hasSuperAssets = loadSuperFlashyAssets(superAssets);
-
+void drawMenu(TFT_eSPI& display, uint8_t selectedIndex,
+              const FlappyAssets& flappyAssets,
+              const SuperFlashyAssets& superAssets) {
   display.fillScreen(MENU_BG);
   display.setTextFont(1);
   display.setTextSize(2);
@@ -222,8 +203,7 @@ void drawMenu(TFT_eSPI& display, uint8_t selectedIndex) {
     const int16_t x = tileX(index);
     const int16_t y = tileY(index);
     if (index == 0) {
-      drawFlappyTile(display, x, y, selectedIndex == index,
-                     hasFlappyAssets ? &flappyAssets : nullptr);
+      drawFlappyTile(display, flappyAssets, x, y, selectedIndex == index);
       continue;
     }
 
@@ -235,8 +215,7 @@ void drawMenu(TFT_eSPI& display, uint8_t selectedIndex) {
       display.drawRoundRect(x + 2, y + 2, TILE_WIDTH - 4, TILE_HEIGHT - 4,
                             TILE_RADIUS - 2, TFT_YELLOW);
     }
-    drawGameIcon(display, index, x, y + 8,
-                 hasSuperAssets ? &superAssets : nullptr);
+    drawGameIcon(display, index, superAssets, x, y + 8);
 
     display.setTextFont(1);
     display.setTextSize(1);
@@ -253,8 +232,6 @@ void drawMenu(TFT_eSPI& display, uint8_t selectedIndex) {
   display.drawString("BTN1/2 Move   BTN3 Select   BTN4 Back",
                      display.width() / 2,
                      display.height() - 4);
-  flappyAssets.release();
-  superAssets.release();
 }
 
 void showComingSoon(TFT_eSPI& display, const char* name) {
@@ -287,22 +264,42 @@ void launchSelectedGame(TFT_eSPI& display, uint8_t selectedIndex) {
 bool showGameMenu(TFT_eSPI& display, bool gameModeOnly) {
   uint8_t selectedIndex = 0;
   waitForButtonRelease();
-  drawMenu(display, selectedIndex);
+  ensureGameAssets(display);
+
+  FlappyAssets flappyAssets;
+  SuperFlashyAssets superAssets;
+  while (!loadFlappyAssets(flappyAssets) ||
+         !loadSuperFlashyAssets(superAssets)) {
+    flappyAssets.release();
+    superAssets.release();
+    ensureGameAssets(display);
+  }
+  drawMenu(display, selectedIndex, flappyAssets, superAssets);
 
   while (true) {
     const Button button = readButtonEvent();
     if (button == Button::Button1) {
       selectedIndex = selectedIndex == 0 ? 5 : selectedIndex - 1;
-      drawMenu(display, selectedIndex);
+      drawMenu(display, selectedIndex, flappyAssets, superAssets);
     } else if (button == Button::Button2) {
       selectedIndex = (selectedIndex + 1) % 6;
-      drawMenu(display, selectedIndex);
+      drawMenu(display, selectedIndex, flappyAssets, superAssets);
     } else if (button == Button::Button3) {
       waitForButtonRelease();
+      flappyAssets.release();
+      superAssets.release();
       launchSelectedGame(display, selectedIndex);
-      drawMenu(display, selectedIndex);
+      while (!loadFlappyAssets(flappyAssets) ||
+             !loadSuperFlashyAssets(superAssets)) {
+        flappyAssets.release();
+        superAssets.release();
+        ensureGameAssets(display);
+      }
+      drawMenu(display, selectedIndex, flappyAssets, superAssets);
     } else if (button == Button::Button4) {
       waitForButtonRelease();
+      flappyAssets.release();
+      superAssets.release();
       return gameModeOnly;
     }
     delay(10);

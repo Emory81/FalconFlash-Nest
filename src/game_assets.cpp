@@ -9,7 +9,6 @@
 
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
-#include <freertos/task.h>
 #include <mbedtls/sha256.h>
 
 #include <cstdlib>
@@ -28,8 +27,8 @@ constexpr char MANIFEST_PART_PATH[] = "/game_assets/manifest.txt.part";
 constexpr char MANIFEST_BACKUP_PATH[] = "/game_assets/manifest.txt.bak";
 constexpr uint8_t MAX_MANIFEST_ENTRIES = 40;
 constexpr uint16_t HASH_HEX_LENGTH = 64;
-constexpr uint32_t WIFI_WAIT_MS = 15000;
 constexpr uint32_t HTTP_TIMEOUT_MS = 12000;
+constexpr uint32_t RETRY_DELAY_MS = 1000;
 
 struct ManifestEntry {
   char path[64];
@@ -42,7 +41,54 @@ struct ManifestEntry {
 
 bool filesystemReady = false;
 SemaphoreHandle_t filesystemMutex = nullptr;
-TaskHandle_t syncTaskHandle = nullptr;
+bool progressScreenReady = false;
+String progressStatus;
+
+void drawAssetProgress(TFT_eSPI& display, const char* status,
+                       uint32_t completed, uint32_t total) {
+  const int16_t screenWidth = display.width();
+  const int16_t centerX = screenWidth / 2;
+  const int16_t barX = 30;
+  const int16_t barY = 142;
+  const int16_t barWidth = screenWidth - 60;
+  const int16_t barHeight = 18;
+  const uint8_t percent =
+      total == 0 ? 0 : static_cast<uint8_t>(
+                             min<uint32_t>(100, completed * 100UL / total));
+
+  if (!progressScreenReady) {
+    display.fillScreen(TFT_BLACK);
+    display.setTextFont(1);
+    display.setTextColor(TFT_WHITE, TFT_BLACK);
+    display.setTextDatum(MC_DATUM);
+    display.setTextSize(2);
+    display.drawString("Loading game files", centerX, 74);
+    display.drawRoundRect(barX, barY, barWidth, barHeight, 5, TFT_WHITE);
+    progressScreenReady = true;
+    progressStatus = "";
+  }
+  display.setTextFont(1);
+  display.setTextColor(TFT_WHITE, TFT_BLACK);
+  display.setTextDatum(MC_DATUM);
+  display.setTextSize(1);
+  if (progressStatus != status) {
+    display.fillRect(0, 99, screenWidth, 23, TFT_BLACK);
+    display.drawString(status, centerX, 110);
+    progressStatus = status;
+  }
+  display.fillRoundRect(barX + 2, barY + 2, barWidth - 4, barHeight - 4, 3,
+                        TFT_BLACK);
+  const int16_t fillWidth =
+      static_cast<int16_t>((barWidth - 4) * percent / 100);
+  if (fillWidth > 0) {
+    display.fillRoundRect(barX + 2, barY + 2, fillWidth, barHeight - 4, 3,
+                          TFT_WHITE);
+  }
+  char percentText[8];
+  snprintf(percentText, sizeof(percentText), "%u%%", percent);
+  display.fillRect(centerX - 25, 172, 50, 22, TFT_BLACK);
+  display.drawString(percentText, centerX, 183);
+}
 
 void lockFilesystem() {
   if (filesystemMutex != nullptr) {
@@ -285,7 +331,8 @@ bool fetchManifest(String& manifest) {
   return status == HTTP_CODE_OK && manifest.length() > 0;
 }
 
-bool downloadAsset(const ManifestEntry& entry) {
+bool downloadAsset(const ManifestEntry& entry, TFT_eSPI& display,
+                   uint32_t completedBefore, uint32_t totalSize) {
   if (!validRelativePath(entry.path)) return false;
   const String target = cachePath(entry);
   const String temporary = target + ".part";
@@ -356,6 +403,7 @@ bool downloadAsset(const ManifestEntry& entry) {
     }
     total += read;
     lastDataAt = millis();
+    drawAssetProgress(display, entry.path, completedBefore + total, totalSize);
   }
 
   lockFilesystem();
@@ -388,34 +436,42 @@ bool writeManifestAndReplace(const String& manifest) {
                           MANIFEST_BACKUP_PATH);
 }
 
-void synchronizeAssets() {
+bool manifestFilesComplete(const String& manifest) {
+  ManifestEntry entries[MAX_MANIFEST_ENTRIES];
+  const size_t count = parseManifest(manifest, entries, MAX_MANIFEST_ENTRIES);
+  if (count == 0) return false;
+  for (size_t index = 0; index < count; ++index) {
+    if (!fileMatches(entries[index])) return false;
+  }
+  return true;
+}
+
+bool synchronizeAssets(TFT_eSPI& display) {
   String remoteManifest;
-  if (!fetchManifest(remoteManifest)) return;
+  if (!fetchManifest(remoteManifest)) return false;
 
   ManifestEntry entries[MAX_MANIFEST_ENTRIES];
   const size_t count =
       parseManifest(remoteManifest, entries, MAX_MANIFEST_ENTRIES);
-  if (count == 0) return;
+  if (count == 0) return false;
 
-  bool complete = true;
+  uint32_t totalSize = 0;
+  uint32_t completed = 0;
   for (size_t index = 0; index < count; ++index) {
-    if (!fileMatches(entries[index]) && !downloadAsset(entries[index])) {
-      complete = false;
-      break;
-    }
+    totalSize += entries[index].size;
+    if (fileMatches(entries[index])) completed += entries[index].size;
   }
-  if (complete) writeManifestAndReplace(remoteManifest);
-}
+  drawAssetProgress(display, "Checking files...", completed, totalSize);
 
-void assetSyncTask(void*) {
-  const uint32_t startedAt = millis();
-  while (WiFi.status() != WL_CONNECTED &&
-         millis() - startedAt < WIFI_WAIT_MS) {
-    delay(250);
+  for (size_t index = 0; index < count; ++index) {
+    if (fileMatches(entries[index])) continue;
+    if (!downloadAsset(entries[index], display, completed, totalSize)) {
+      return false;
+    }
+    completed += entries[index].size;
   }
-  if (WiFi.status() == WL_CONNECTED) synchronizeAssets();
-  syncTaskHandle = nullptr;
-  vTaskDelete(nullptr);
+  drawAssetProgress(display, "Finalizing...", totalSize, totalSize);
+  return writeManifestAndReplace(remoteManifest);
 }
 
 bool loadImage(const ManifestEntry* entries, size_t count, const char* path,
@@ -493,8 +549,7 @@ void FlappyAssets::release() {
   birdOpen.release();
   pipeBody.release();
   pipeCap.release();
-  backgroundDay.release();
-  backgroundNight.release();
+  background.release();
 }
 
 void SuperFlashyAssets::release() {
@@ -531,13 +586,44 @@ bool initGameAssets() {
   return true;
 }
 
-void startGameAssetSync() {
-  if (!filesystemReady || syncTaskHandle != nullptr) return;
-  xTaskCreatePinnedToCore(assetSyncTask, "game_asset_sync", 8192, nullptr, 1,
-                          &syncTaskHandle, 0);
+bool ensureGameAssets(TFT_eSPI& display) {
+  progressScreenReady = false;
+  progressStatus = "";
+  while (true) {
+    if (!filesystemReady && !initGameAssets()) {
+      drawAssetProgress(display, "Storage unavailable - retrying", 0, 0);
+      delay(RETRY_DELAY_MS);
+      continue;
+    }
+
+    String cachedManifest;
+    const bool cachedComplete =
+        readCachedManifest(cachedManifest) &&
+        manifestFilesComplete(cachedManifest);
+    if (WiFi.status() != WL_CONNECTED) {
+      if (cachedComplete) {
+        progressScreenReady = false;
+        return true;
+      }
+      drawAssetProgress(display, "Waiting for Wi-Fi...", 0, 0);
+      delay(250);
+      continue;
+    }
+
+    if (synchronizeAssets(display)) {
+      progressScreenReady = false;
+      return true;
+    }
+    if (cachedComplete) {
+      progressScreenReady = false;
+      return true;
+    }
+    drawAssetProgress(display, "Download failed - retrying", 0, 0);
+    delay(RETRY_DELAY_MS);
+  }
 }
 
-bool loadFlappyAssets(FlappyAssets& assets) {
+bool loadFlappyAssets(FlappyAssets& assets, bool night) {
   assets.release();
   ManifestEntry entries[MAX_MANIFEST_ENTRIES];
   size_t count = 0;
@@ -556,10 +642,9 @@ bool loadFlappyAssets(FlappyAssets& assets) {
                    assets.pipeBody, entries, count) &&
       loadOneImage("flappy/pipe_cap.rgb565", "rgb565", 32, 14,
                    assets.pipeCap, entries, count) &&
-      loadOneImage("flappy/background_day.rgb332", "rgb332", 320, 240,
-                   assets.backgroundDay, entries, count) &&
-      loadOneImage("flappy/background_night.rgb332", "rgb332", 320, 240,
-                   assets.backgroundNight, entries, count);
+      loadOneImage(night ? "flappy/background_night.rgb332"
+                         : "flappy/background_day.rgb332",
+                   "rgb332", 320, 240, assets.background, entries, count);
   if (!ok) assets.release();
   return ok;
 }

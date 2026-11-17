@@ -17,8 +17,8 @@
 // jump: releasing a direction keeps the speed for MOMENTUM_GRACE_MS (long enough
 // to reach the jump button), and BTN1/BTN4 steer in the air.
 namespace {
-const SuperFlashyAssets* runtimeAssets = nullptr;
 constexpr uint16_t SFB_TRANSPARENT = 0xF81F;
+const SuperFlashyAssets* runtimeAssets = nullptr;
 constexpr int16_t SCALE = 1;  // art pixels -> screen pixels (tiles match the 16 px boxes)
 constexpr int16_t TILE = 16 * SCALE;
 // The bird is drawn at its native art resolution (1:1) so it stays crisp and
@@ -208,7 +208,7 @@ Rat rats[BOX_SLOTS];   // rats[i] hatched from eggs[i]
 // leap high, and at the top of the leap pounce forward.
 enum class FoxState : uint8_t { Idle, Prowl, Windup, Leap, Pounce, Recover };
 
-constexpr int16_t FOX_W = 35;   // sizes follow the art
+constexpr int16_t FOX_W = 35;
 constexpr int16_t FOX_H = 24;
 constexpr float FOX_RUN_SPEED = 2.8f;          // faster than a walking bird
 constexpr float FOX_WAKE_DIST = 180.0f;
@@ -1101,18 +1101,6 @@ void respawn(Player& p, int16_t screenH) {
        static_cast<float>(spawnY(level->startRow, screenH)),
        0, 0, true, true, false, false, 0};
 }
-
-void drawAssetsUnavailable(TFT_eSPI& display) {
-  display.fillScreen(TFT_BLACK);
-  display.setTextFont(1);
-  display.setTextSize(2);
-  display.setTextColor(TFT_WHITE, TFT_BLACK);
-  display.setTextDatum(MC_DATUM);
-  display.drawString("Game assets", display.width() / 2, 92);
-  display.drawString("not ready", display.width() / 2, 116);
-  display.setTextSize(1);
-  display.drawString("Connect Wi-Fi and try again", display.width() / 2, 150);
-}
 }  // namespace
 
 void drawSuperFlashyBirdsIcon(TFT_eSPI& d, const SuperFlashyAssets& assets,
@@ -1142,9 +1130,6 @@ void runSuperFlashyBirds(TFT_eSPI& display) {
   waitForButtonRelease();
   SuperFlashyAssets assets;
   if (!loadSuperFlashyAssets(assets)) {
-    drawAssetsUnavailable(display);
-    delay(1500);
-    waitForButtonRelease();
     return;
   }
   runtimeAssets = &assets;

@@ -160,7 +160,7 @@ void drawSpriteRotated(TFT_eSPI& display, int16_t centerX, int16_t centerY,
 // layout as the 8-bit sprite's buffer, so the sprite path is a single memcpy.
 // Without a sprite the day image goes straight to the screen.
 void drawBackground(TFT_eSPI& display, TFT_eSprite* sprite,
-                    const FlappyAssets& assets, bool night) {
+                    const FlappyAssets& assets) {
   // The image must match the screen exactly (re-run tools/convert_sprites.py
   // if the display size changes); otherwise rows would be misaligned.
   if (display.width() != BACKGROUND_WIDTH ||
@@ -169,10 +169,9 @@ void drawBackground(TFT_eSPI& display, TFT_eSprite* sprite,
     canvas.fillRect(0, 0, display.width(), display.height(), TFT_BLACK);
     return;
   }
-  const uint8_t* image = night ? assets.backgroundNight.data
-                               : assets.backgroundDay.data;
+  const uint8_t* image = assets.background.data;
   if (sprite != nullptr) {
-    memcpy(sprite->getPointer(), image, assets.backgroundDay.size);
+    memcpy(sprite->getPointer(), image, assets.background.size);
   } else {
     display.pushImage(0, 0, BACKGROUND_WIDTH, BACKGROUND_HEIGHT,
                       const_cast<uint8_t*>(image), true);
@@ -335,18 +334,6 @@ void drawGameOver(TFT_eSPI& display, uint32_t score, uint32_t best,
   display.drawString("BTN3 Play again   BTN4 Back", centerX,
                      panelY + PANEL_H - 18);
 }
-
-void drawAssetsUnavailable(TFT_eSPI& display) {
-  display.fillScreen(TFT_BLACK);
-  display.setTextFont(1);
-  display.setTextSize(2);
-  display.setTextColor(TFT_WHITE, TFT_BLACK);
-  display.setTextDatum(MC_DATUM);
-  display.drawString("Game assets", display.width() / 2, 92);
-  display.drawString("not ready", display.width() / 2, 116);
-  display.setTextSize(1);
-  display.drawString("Connect Wi-Fi and try again", display.width() / 2, 150);
-}
 }  // namespace
 
 void runFlappyBird(TFT_eSPI& display) {
@@ -354,11 +341,9 @@ void runFlappyBird(TFT_eSPI& display) {
   const int16_t screenH = display.height();
 
   waitForButtonRelease();
+  const bool night = random(NIGHT_ONE_IN) == 0;
   FlappyAssets assets;
-  if (!loadFlappyAssets(assets)) {
-    drawAssetsUnavailable(display);
-    delay(1500);
-    waitForButtonRelease();
+  if (!loadFlappyAssets(assets, night)) {
     return;
   }
   // Keep the speaker enabled while the game runs so short effects are heard.
@@ -375,7 +360,6 @@ void runFlappyBird(TFT_eSPI& display) {
     float birdVelocity = 0.0f;
     Pipe pipes[MAX_PIPES];
     uint8_t pipeCount = 0;
-    const bool night = random(NIGHT_ONE_IN) == 0;
     const float pipeFrequency =
         night ? PIPE_FREQUENCY * NIGHT_PIPE_FREQUENCY_MULTIPLIER
               : PIPE_FREQUENCY;
@@ -488,7 +472,7 @@ void runFlappyBird(TFT_eSPI& display) {
         break;
       }
 
-      drawBackground(display, sprite, assets, night);
+      drawBackground(display, sprite, assets);
       if (useSprite) {
         drawFrame(gameFrame, assets, birdY, birdVelocity, pipeSpeed, pipes,
                   pipeCount, score, bestAtStart, flapStartedAt);
@@ -504,7 +488,7 @@ void runFlappyBird(TFT_eSPI& display) {
     const uint32_t totalFlaps = leaderboardAddFlaps("flappy", roundFlaps);
     uint32_t top[LEADERBOARD_SIZE];
     const uint8_t topCount = leaderboardTop("flappy", top, LEADERBOARD_SIZE);
-    drawBackground(display, sprite, assets, night);
+    drawBackground(display, sprite, assets);
     if (useSprite) {
       drawGameOver(gameFrame, score, best, newBest, top, topCount, totalFlaps);
       gameFrame.pushSprite(0, 0);
@@ -518,7 +502,7 @@ void runFlappyBird(TFT_eSPI& display) {
       if (button == Button::Button4) {
         audioEnd();
         gameFrame.deleteSprite();
-      assets.release();
+        assets.release();
         waitForButtonRelease();
         return;
       }

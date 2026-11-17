@@ -4,6 +4,8 @@
 
 #include <stddef.h>
 
+#include <TFT_eSPI.h>
+
 // A decoded manifest entry backed by a heap allocation. RGB565 images are
 // stored little-endian so the returned pixel pointer can be used directly on
 // the ESP32.
@@ -27,8 +29,7 @@ struct FlappyAssets {
   GameAssetImage birdOpen;
   GameAssetImage pipeBody;
   GameAssetImage pipeCap;
-  GameAssetImage backgroundDay;
-  GameAssetImage backgroundNight;
+  GameAssetImage background;
 
   void release();
 };
@@ -59,9 +60,9 @@ struct SuperFlashyAssets {
 // intentionally non-formatting: a mount failure must not erase a valid cache.
 bool initGameAssets();
 
-// Start a bounded synchronization task. It returns immediately and leaves
-// existing cached files in place if Wi-Fi or GitHub is unavailable.
-void startGameAssetSync();
+// Block until every manifest asset is cached and verified. A progress screen
+// remains visible while Wi-Fi/GitHub is unavailable and while files download.
+bool ensureGameAssets(TFT_eSPI& display);
 
-bool loadFlappyAssets(FlappyAssets& assets);
+bool loadFlappyAssets(FlappyAssets& assets, bool night = false);
 bool loadSuperFlashyAssets(SuperFlashyAssets& assets);

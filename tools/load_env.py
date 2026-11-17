@@ -26,10 +26,6 @@ if missing:
 
 game_mode_value = dotenv.get("GAME_MODE_ONLY", "false").lower()
 game_mode_only = "1" if game_mode_value in ("1", "true", "yes", "on") else "0"
-game_asset_base_url = dotenv.get(
-    "FALCON_GAME_ASSET_BASE_URL",
-    "https://raw.githubusercontent.com/Emory81/FalconFlash-Nest/main/game_assets",
-)
 
 
 def c_string(value):
@@ -42,6 +38,5 @@ env.Append(
         ("FALCON_FACTORY_ID", c_string(dotenv["FALCON_FACTORY_ID"])),
         ("FALCON_FACTORY_SECRET", c_string(dotenv["FALCON_FACTORY_SECRET"])),
         ("FALCON_GAME_MODE_ONLY", game_mode_only),
-        ("FALCON_GAME_ASSET_BASE_URL", c_string(game_asset_base_url)),
     ]
 )

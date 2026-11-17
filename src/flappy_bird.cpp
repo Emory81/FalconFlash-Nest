@@ -8,7 +8,7 @@
 
 #include "audio_helper.h"
 #include "button_input.h"
-#include "flappy_sprites.h"
+#include "game_assets.h"
 #include "leaderboard.h"
 
 namespace {
@@ -17,6 +17,15 @@ namespace {
 // (48x48), so it is not scaled further.
 constexpr float ZOOM = 1.0f;
 constexpr float PIPE_ZOOM = 1.25f;
+constexpr int16_t BIRD_ART_WIDTH = 48;
+constexpr int16_t BIRD_ART_HEIGHT = 48;
+constexpr uint16_t SPRITE_TRANSPARENT = 0xF81F;
+constexpr int16_t PIPE_BODY_ART_WIDTH = 28;
+constexpr int16_t PIPE_BODY_ART_HEIGHT = 8;
+constexpr int16_t PIPE_CAP_ART_WIDTH = 32;
+constexpr int16_t PIPE_CAP_ART_HEIGHT = 14;
+constexpr int16_t BACKGROUND_WIDTH = 320;
+constexpr int16_t BACKGROUND_HEIGHT = 240;
 constexpr int16_t zoomed(int16_t value) {
   return static_cast<int16_t>(value * ZOOM + 0.5f);
 }
@@ -27,10 +36,10 @@ constexpr int16_t pipeZoomed(int16_t value) {
 constexpr int16_t GROUND_HEIGHT = 0;
 // Pipe = stem (PipeBody art, repeated) + a slightly wider cap (PipeCap art)
 // on the open end, so the stem width and cap overhang come from the art.
-constexpr int16_t PIPE_WIDTH = pipeZoomed(PIPE_BODY_WIDTH);
-constexpr int16_t PIPE_TILE_HEIGHT = pipeZoomed(PIPE_BODY_HEIGHT);
-constexpr int16_t PIPE_CAP_W = pipeZoomed(PIPE_CAP_WIDTH);
-constexpr int16_t PIPE_CAP_H = pipeZoomed(PIPE_CAP_HEIGHT);
+constexpr int16_t PIPE_WIDTH = pipeZoomed(PIPE_BODY_ART_WIDTH);
+constexpr int16_t PIPE_TILE_HEIGHT = pipeZoomed(PIPE_BODY_ART_HEIGHT);
+constexpr int16_t PIPE_CAP_W = pipeZoomed(PIPE_CAP_ART_WIDTH);
+constexpr int16_t PIPE_CAP_H = pipeZoomed(PIPE_CAP_ART_HEIGHT);
 constexpr int16_t PIPE_CAP_OVERHANG = (PIPE_CAP_W - PIPE_WIDTH) / 2;
 constexpr int16_t GAP_HEIGHT = 76;
 constexpr int16_t BIRD_X = 58;
@@ -110,11 +119,12 @@ void drawBackButton(TFT_eSPI& display) {
 
 // One flap per button press: open, transition, closed, then back to the
 // default wings-back pose.
-const uint16_t* birdFrame(uint32_t flapStartedAt) {
-  const uint16_t* const flap[] = {birdFlapOpen, birdFlapTransition,
-                                  birdFlapClosed};
+const uint16_t* birdFrame(const FlappyAssets& assets, uint32_t flapStartedAt) {
+  const uint16_t* const flap[] = {assets.birdOpen.pixels(),
+                                  assets.birdTransition.pixels(),
+                                  assets.birdClosed.pixels()};
   const uint32_t step = (millis() - flapStartedAt) / FLAP_FRAME_MS;
-  return step < 3 ? flap[step] : birdWingsBack;
+  return step < 3 ? flap[step] : assets.birdBack.pixels();
 }
 
 // TFT_eSprite has no transparent pushImage(), so skip see-through pixels by
@@ -149,7 +159,8 @@ void drawSpriteRotated(TFT_eSPI& display, int16_t centerX, int16_t centerY,
 // Full-screen background, day or night. The images are RGB332, the same
 // layout as the 8-bit sprite's buffer, so the sprite path is a single memcpy.
 // Without a sprite the day image goes straight to the screen.
-void drawBackground(TFT_eSPI& display, TFT_eSprite* sprite, bool night) {
+void drawBackground(TFT_eSPI& display, TFT_eSprite* sprite,
+                    const FlappyAssets& assets, bool night) {
   // The image must match the screen exactly (re-run tools/convert_sprites.py
   // if the display size changes); otherwise rows would be misaligned.
   if (display.width() != BACKGROUND_WIDTH ||
@@ -158,9 +169,10 @@ void drawBackground(TFT_eSPI& display, TFT_eSprite* sprite, bool night) {
     canvas.fillRect(0, 0, display.width(), display.height(), TFT_BLACK);
     return;
   }
-  const uint8_t* image = night ? backgroundNightImage : backgroundImage;
+  const uint8_t* image = night ? assets.backgroundNight.data
+                               : assets.backgroundDay.data;
   if (sprite != nullptr) {
-    memcpy(sprite->getPointer(), image, sizeof(backgroundImage));
+    memcpy(sprite->getPointer(), image, assets.backgroundDay.size);
   } else {
     display.pushImage(0, 0, BACKGROUND_WIDTH, BACKGROUND_HEIGHT,
                       const_cast<uint8_t*>(image), true);
@@ -199,35 +211,37 @@ void drawImage(TFT_eSPI& display, int16_t x, int16_t y, int16_t srcW,
 }
 
 // Stem tiles from the repeating body art, then the cap on the open end.
-void drawPipe(TFT_eSPI& display, int16_t pipeX, int16_t gapTop,
-              int16_t gapBottom) {
+void drawPipe(TFT_eSPI& display, const FlappyAssets& assets, int16_t pipeX,
+              int16_t gapTop, int16_t gapBottom) {
   const int16_t screenH = display.height();
   const int16_t capX = pipeX - PIPE_CAP_OVERHANG;
 
   // Top pipe: stem from the ceiling down to its cap.
   for (int16_t y = 0; y < gapTop - PIPE_CAP_H; y += PIPE_TILE_HEIGHT) {
     const int16_t h = min<int16_t>(PIPE_TILE_HEIGHT, gapTop - PIPE_CAP_H - y);
-    drawImage(display, pipeX, y, PIPE_BODY_WIDTH, PIPE_BODY_HEIGHT, pipeBody,
-              false, PIPE_WIDTH, h);
+    drawImage(display, pipeX, y, PIPE_BODY_ART_WIDTH, PIPE_BODY_ART_HEIGHT,
+              assets.pipeBody.pixels(), false, PIPE_WIDTH, h);
   }
-  drawImage(display, capX, gapTop - PIPE_CAP_H, PIPE_CAP_WIDTH,
-            PIPE_CAP_HEIGHT, pipeCap, true, PIPE_CAP_W, PIPE_CAP_H);
+  drawImage(display, capX, gapTop - PIPE_CAP_H, PIPE_CAP_ART_WIDTH,
+            PIPE_CAP_ART_HEIGHT, assets.pipeCap.pixels(), true, PIPE_CAP_W,
+            PIPE_CAP_H);
 
   // Bottom pipe: cap at the gap edge, stem below it to the bottom of the screen.
-  drawImage(display, capX, gapBottom, PIPE_CAP_WIDTH, PIPE_CAP_HEIGHT, pipeCap,
-            false, PIPE_CAP_W, PIPE_CAP_H);
+  drawImage(display, capX, gapBottom, PIPE_CAP_ART_WIDTH, PIPE_CAP_ART_HEIGHT,
+            assets.pipeCap.pixels(), false, PIPE_CAP_W, PIPE_CAP_H);
   for (int16_t y = gapBottom + PIPE_CAP_H; y < screenH; y += PIPE_TILE_HEIGHT) {
-    drawImage(display, pipeX, y, PIPE_BODY_WIDTH, PIPE_BODY_HEIGHT, pipeBody,
-              false, PIPE_WIDTH, PIPE_TILE_HEIGHT);
+    drawImage(display, pipeX, y, PIPE_BODY_ART_WIDTH, PIPE_BODY_ART_HEIGHT,
+              assets.pipeBody.pixels(), false, PIPE_WIDTH, PIPE_TILE_HEIGHT);
   }
 }
 
-void drawFrame(TFT_eSPI& display, float birdY, float birdVelocity,
+void drawFrame(TFT_eSPI& display, const FlappyAssets& assets, float birdY,
+               float birdVelocity,
                float pipeSpeed, const Pipe* pipes, uint8_t pipeCount,
                uint16_t score, uint32_t best, uint32_t flapStartedAt) {
   for (uint8_t i = 0; i < pipeCount; ++i) {
-    drawPipe(display, static_cast<int16_t>(pipes[i].x), pipes[i].gapTop,
-             pipes[i].gapTop + GAP_HEIGHT);
+    drawPipe(display, assets, static_cast<int16_t>(pipes[i].x),
+             pipes[i].gapTop, pipes[i].gapTop + GAP_HEIGHT);
   }
 
   // Direction of travel: pipes approach at pipeSpeed while the bird moves
@@ -236,8 +250,8 @@ void drawFrame(TFT_eSPI& display, float birdY, float birdVelocity,
   const float maxTilt = MAX_TILT_DEGREES * static_cast<float>(M_PI) / 180.0f;
   tilt = tilt > maxTilt ? maxTilt : (tilt < -maxTilt ? -maxTilt : tilt);
   drawSpriteRotated(display, BIRD_X, static_cast<int16_t>(birdY),
-                    BIRD_FLAP_OPEN_WIDTH, BIRD_FLAP_OPEN_HEIGHT,
-                    birdFrame(flapStartedAt), tilt);
+                    BIRD_ART_WIDTH, BIRD_ART_HEIGHT,
+                    birdFrame(assets, flapStartedAt), tilt);
   if (SHOW_HITBOX) {
     display.drawRect(
         BIRD_X + BIRD_BODY_OFFSET_X - BIRD_BODY_HALF_W,
@@ -321,6 +335,18 @@ void drawGameOver(TFT_eSPI& display, uint32_t score, uint32_t best,
   display.drawString("BTN3 Play again   BTN4 Back", centerX,
                      panelY + PANEL_H - 18);
 }
+
+void drawAssetsUnavailable(TFT_eSPI& display) {
+  display.fillScreen(TFT_BLACK);
+  display.setTextFont(1);
+  display.setTextSize(2);
+  display.setTextColor(TFT_WHITE, TFT_BLACK);
+  display.setTextDatum(MC_DATUM);
+  display.drawString("Game assets", display.width() / 2, 92);
+  display.drawString("not ready", display.width() / 2, 116);
+  display.setTextSize(1);
+  display.drawString("Connect Wi-Fi and try again", display.width() / 2, 150);
+}
 }  // namespace
 
 void runFlappyBird(TFT_eSPI& display) {
@@ -328,6 +354,13 @@ void runFlappyBird(TFT_eSPI& display) {
   const int16_t screenH = display.height();
 
   waitForButtonRelease();
+  FlappyAssets assets;
+  if (!loadFlappyAssets(assets)) {
+    drawAssetsUnavailable(display);
+    delay(1500);
+    waitForButtonRelease();
+    return;
+  }
   // Keep the speaker enabled while the game runs so short effects are heard.
   audioBegin();
 
@@ -364,6 +397,7 @@ void runFlappyBird(TFT_eSPI& display) {
         leaderboardAddFlaps("flappy", roundFlaps);  // quitting still counts
         audioEnd();
         gameFrame.deleteSprite();
+        assets.release();
         waitForButtonRelease();
         return;
       }
@@ -454,14 +488,14 @@ void runFlappyBird(TFT_eSPI& display) {
         break;
       }
 
-      drawBackground(display, sprite, night);
+      drawBackground(display, sprite, assets, night);
       if (useSprite) {
-        drawFrame(gameFrame, birdY, birdVelocity, pipeSpeed, pipes, pipeCount,
-                  score, bestAtStart, flapStartedAt);
+        drawFrame(gameFrame, assets, birdY, birdVelocity, pipeSpeed, pipes,
+                  pipeCount, score, bestAtStart, flapStartedAt);
         gameFrame.pushSprite(0, 0);
       } else {
-        drawFrame(display, birdY, birdVelocity, pipeSpeed, pipes, pipeCount,
-                  score, bestAtStart, flapStartedAt);
+        drawFrame(display, assets, birdY, birdVelocity, pipeSpeed, pipes,
+                  pipeCount, score, bestAtStart, flapStartedAt);
       }
     }
 
@@ -470,7 +504,7 @@ void runFlappyBird(TFT_eSPI& display) {
     const uint32_t totalFlaps = leaderboardAddFlaps("flappy", roundFlaps);
     uint32_t top[LEADERBOARD_SIZE];
     const uint8_t topCount = leaderboardTop("flappy", top, LEADERBOARD_SIZE);
-    drawBackground(display, sprite, night);
+    drawBackground(display, sprite, assets, night);
     if (useSprite) {
       drawGameOver(gameFrame, score, best, newBest, top, topCount, totalFlaps);
       gameFrame.pushSprite(0, 0);
@@ -484,6 +518,7 @@ void runFlappyBird(TFT_eSPI& display) {
       if (button == Button::Button4) {
         audioEnd();
         gameFrame.deleteSprite();
+      assets.release();
         waitForButtonRelease();
         return;
       }

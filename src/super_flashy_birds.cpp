@@ -6,8 +6,8 @@
 
 #include "audio_helper.h"
 #include "button_input.h"
+#include "game_assets.h"
 #include "super_flashy_levels.h"
-#include "super_flashy_sprites.h"
 
 // Controls (one resistor-ladder ADC, so only one button reads at a time):
 //   BTN1 left, BTN4 right, BTN3 jump, BTN2 duck (fast-fall in the air).
@@ -17,6 +17,8 @@
 // jump: releasing a direction keeps the speed for MOMENTUM_GRACE_MS (long enough
 // to reach the jump button), and BTN1/BTN4 steer in the air.
 namespace {
+const SuperFlashyAssets* runtimeAssets = nullptr;
+constexpr uint16_t SFB_TRANSPARENT = 0xF81F;
 constexpr int16_t SCALE = 1;  // art pixels -> screen pixels (tiles match the 16 px boxes)
 constexpr int16_t TILE = 16 * SCALE;
 // The bird is drawn at its native art resolution (1:1) so it stays crisp and
@@ -194,8 +196,8 @@ constexpr uint32_t INVULN_MS = 1500;
 constexpr float HURT_KNOCKBACK = 3.5f;
 constexpr float HURT_POP = -5.0f;
 
-constexpr int16_t NEST_W = sfbNestWidth;
-constexpr int16_t NEST_H = sfbNestHeight;
+constexpr int16_t NEST_W = 40;
+constexpr int16_t NEST_H = 23;
 constexpr int16_t NEST_SINK = 0;
 
 Box boxes[BOX_SLOTS];  // the last slot is the nest (level goal)
@@ -206,8 +208,8 @@ Rat rats[BOX_SLOTS];   // rats[i] hatched from eggs[i]
 // leap high, and at the top of the leap pounce forward.
 enum class FoxState : uint8_t { Idle, Prowl, Windup, Leap, Pounce, Recover };
 
-constexpr int16_t FOX_W = sfbFoxWidth;   // sizes follow the art
-constexpr int16_t FOX_H = sfbFoxHeight;
+constexpr int16_t FOX_W = 35;   // sizes follow the art
+constexpr int16_t FOX_H = 24;
 constexpr float FOX_RUN_SPEED = 2.8f;          // faster than a walking bird
 constexpr float FOX_WAKE_DIST = 180.0f;
 constexpr float FOX_POUNCE_RANGE = 110.0f;
@@ -491,7 +493,7 @@ void drawScaled(TFT_eSPI& d, int16_t x, int16_t y, int16_t w, int16_t h,
       uint16_t color = SFB_TRANSPARENT;
       if (dx < destW) {
         const int16_t sx = flip ? (w - 1 - dx / scale) : dx / scale;
-        color = pgm_read_word(&pixels[sy * w + sx]);
+        color = pixels[sy * w + sx];
       }
       if (runStart >= 0 && color != runColor) {
         d.drawFastHLine(x + runStart, y + dy, dx - runStart, runColor);
@@ -533,8 +535,9 @@ void drawLayer(TFT_eSPI& d, bool (*solid)(int16_t, int16_t), const uint16_t* til
 }
 
 void drawGround(TFT_eSPI& d, int16_t cameraX, int16_t screenH) {
-  drawLayer(d, decorTile, sfbDirt, cameraX, screenH);  // dirt / background
-  drawLayer(d, solidTile, sfbGrass, cameraX, screenH);
+  drawLayer(d, decorTile, runtimeAssets->dirt.pixels(), cameraX,
+            screenH);  // dirt / background
+  drawLayer(d, solidTile, runtimeAssets->grass.pixels(), cameraX, screenH);
 }
 
 void drawBoxesAndEggs(TFT_eSPI& d, int16_t cameraX) {
@@ -544,9 +547,10 @@ void drawBoxesAndEggs(TFT_eSPI& d, int16_t cameraX) {
     if (e.state == EggState::None) continue;
     const int16_t ex = static_cast<int16_t>(e.x) - cameraX;
     if (ex + EGG_SIZE < 0 || ex > screenW) continue;
-    const uint16_t* art = e.blue ? sfbBlueEgg : sfbEgg;
-    if (e.state == EggState::Hop) art = sfbEggCracking;
-    if (e.state == EggState::Open) art = sfbEggOpen;
+    const uint16_t* art =
+        e.blue ? runtimeAssets->blueEgg.pixels() : runtimeAssets->egg.pixels();
+    if (e.state == EggState::Hop) art = runtimeAssets->eggCracking.pixels();
+    if (e.state == EggState::Open) art = runtimeAssets->eggOpen.pixels();
     drawScaled(d, ex, static_cast<int16_t>(e.y) - EGG_SIZE, 16, 16, art, false,
                EGG_SIZE, 1);
   }
@@ -554,11 +558,13 @@ void drawBoxesAndEggs(TFT_eSPI& d, int16_t cameraX) {
     if (b.broken) continue;
     const int16_t bx = b.x - cameraX;
     if (bx + b.w < 0 || bx > screenW) continue;
-    const uint16_t* art = b.kind == BoxKind::Plain
-                              ? sfbBox
-                              : (b.kind == BoxKind::Nest
-                                     ? sfbNest
-                                     : (b.used ? sfbMysteryOff : sfbMystery));
+    const uint16_t* art =
+        b.kind == BoxKind::Plain
+            ? runtimeAssets->box.pixels()
+            : (b.kind == BoxKind::Nest
+                   ? runtimeAssets->nest.pixels()
+                   : (b.used ? runtimeAssets->mysteryOff.pixels()
+                             : runtimeAssets->mystery.pixels()));
     drawScaled(d, bx, b.y - b.bump, b.w, b.h, art, false, b.h, 1);
   }
 }
@@ -621,16 +627,20 @@ void drawFrame(TFT_eSPI& d, const Player& p, const Gorilla* gorillas,
     const int16_t gx = static_cast<int16_t>(g.x) - cameraX;
     if (gx + GORILLA_W < 0 || gx > d.width()) continue;
     drawScaled(d, gx, static_cast<int16_t>(g.y) - GORILLA_H + GORILLA_SINK,
-               GORILLA_W, GORILLA_H, g.red ? sfbRedGorilla : sfbGorilla, false,
-               GORILLA_H, 1);
+               GORILLA_W, GORILLA_H,
+               g.red ? runtimeAssets->redGorilla.pixels()
+                     : runtimeAssets->gorilla.pixels(),
+               false, GORILLA_H, 1);
   }
 
   for (const auto& r : rats) {
     if (!r.active) continue;
     const int16_t rx = static_cast<int16_t>(r.x) - cameraX;
     if (rx + RAT_W < 0 || rx > d.width()) continue;
-    drawScaled(d, rx, static_cast<int16_t>(r.y) - RAT_H + RAT_SINK, 24, 12, sfbRat,
-               !r.facingRight, RAT_H, 1);  // the art faces right
+    drawScaled(d, rx, static_cast<int16_t>(r.y) - RAT_H + RAT_SINK,
+               runtimeAssets->rat.width, runtimeAssets->rat.height,
+               runtimeAssets->rat.pixels(), !r.facingRight, RAT_H,
+               1);  // the art faces right
   }
 
   for (const auto& f : foxes) {
@@ -639,8 +649,8 @@ void drawFrame(TFT_eSPI& d, const Player& p, const Gorilla* gorillas,
     if (fx + FOX_W < 0 || fx > d.width()) continue;
     // Crouch (squash) while winding up; the art faces right.
     const int16_t h = f.state == FoxState::Windup ? FOX_H - 6 : FOX_H;
-    drawScaled(d, fx, static_cast<int16_t>(f.y) - h + FOX_SINK, FOX_W, FOX_H, sfbFox,
-               !f.facingRight, h, 1);
+    drawScaled(d, fx, static_cast<int16_t>(f.y) - h + FOX_SINK, FOX_W, FOX_H,
+               runtimeAssets->fox.pixels(), !f.facingRight, h, 1);
   }
 
   // Shadow on the surface below the bird while airborne; it shrinks as the
@@ -661,17 +671,19 @@ void drawFrame(TFT_eSPI& d, const Player& p, const Gorilla* gorillas,
   // Walk cycle: left foot forward/up/forward/post/post2, then the same for the right foot (stand is the 16 px
   // StandStill art, the walk frames are 32 px wide).
   const uint16_t* const walk[WALK_FRAME_COUNT] = {
-      sfbWalk1, sfbWalk0, sfbWalk4, sfbWalk5,   // left foot: up, forward, post, post 2
-      sfbWalk3, sfbWalk2, sfbWalk6, sfbWalk7};  // right foot: up, forward, post, post 2
-  const uint16_t* art = sfbBird;
+      runtimeAssets->walk[1].pixels(), runtimeAssets->walk[0].pixels(),
+      runtimeAssets->walk[4].pixels(), runtimeAssets->walk[5].pixels(),
+      runtimeAssets->walk[3].pixels(), runtimeAssets->walk[2].pixels(),
+      runtimeAssets->walk[6].pixels(), runtimeAssets->walk[7].pixels()};
+  const uint16_t* art = runtimeAssets->bird.pixels();
   int16_t artW = 32;
   int16_t artH = 32;
   if (p.ducking) {
-    art = sfbDuck;  // used on the ground and in the air
-    artW = sfbDuckWidth;
-    artH = sfbDuckHeight;
+    art = runtimeAssets->duck.pixels();  // used on the ground and in the air
+    artW = runtimeAssets->duck.width;
+    artH = runtimeAssets->duck.height;
   } else if (!p.onGround) {
-    art = sfbWalk1;  // foot tucked up while airborne
+    art = runtimeAssets->walk[1].pixels();  // foot tucked up while airborne
   } else if (fabsf(p.vx) > 0.3f) {
     art = walk[static_cast<int>(p.stride) % WALK_FRAME_COUNT];
   } else {
@@ -1089,23 +1101,35 @@ void respawn(Player& p, int16_t screenH) {
        static_cast<float>(spawnY(level->startRow, screenH)),
        0, 0, true, true, false, false, 0};
 }
+
+void drawAssetsUnavailable(TFT_eSPI& display) {
+  display.fillScreen(TFT_BLACK);
+  display.setTextFont(1);
+  display.setTextSize(2);
+  display.setTextColor(TFT_WHITE, TFT_BLACK);
+  display.setTextDatum(MC_DATUM);
+  display.drawString("Game assets", display.width() / 2, 92);
+  display.drawString("not ready", display.width() / 2, 116);
+  display.setTextSize(1);
+  display.drawString("Connect Wi-Fi and try again", display.width() / 2, 150);
+}
 }  // namespace
 
-void drawSuperFlashyBirdsIcon(TFT_eSPI& d, int16_t x, int16_t y) {
+void drawSuperFlashyBirdsIcon(TFT_eSPI& d, const SuperFlashyAssets& assets,
+                              int16_t x, int16_t y) {
   d.fillRect(x, y, 80, 58, SKY);
   for (int16_t i = 0; i < 5; ++i) {
-    const uint16_t* tile = sfbGrass;
+    const uint16_t* tile = assets.grass.pixels();
     for (int16_t ty = 0; ty < 16; ++ty) {
       for (int16_t tx = 0; tx < 16; ++tx) {
-        const uint16_t c =
-            pgm_read_word(&tile[ty * 16 + tx]);
+        const uint16_t c = tile[ty * 16 + tx];
         if (c != SFB_TRANSPARENT) d.drawPixel(x + i * 16 + tx, y + 42 + ty, c);
       }
     }
   }
   for (int16_t ty = 0; ty < 32; ++ty) {
     for (int16_t tx = 0; tx < 16; ++tx) {
-      const uint16_t c = pgm_read_word(&sfbBird[ty * 16 + tx]);
+      const uint16_t c = assets.bird.pixels()[ty * 16 + tx];
       if (c != SFB_TRANSPARENT) d.drawPixel(x + 32 + tx, y + 14 + ty, c);
     }
   }
@@ -1116,6 +1140,14 @@ void runSuperFlashyBirds(TFT_eSPI& display) {
   const int16_t screenH = display.height();
 
   waitForButtonRelease();
+  SuperFlashyAssets assets;
+  if (!loadSuperFlashyAssets(assets)) {
+    drawAssetsUnavailable(display);
+    delay(1500);
+    waitForButtonRelease();
+    return;
+  }
+  runtimeAssets = &assets;
   audioBegin();
 
   TFT_eSprite frame(&display);
@@ -1371,5 +1403,7 @@ void runSuperFlashyBirds(TFT_eSPI& display) {
 
   audioEnd();
   frame.deleteSprite();
+  runtimeAssets = nullptr;
+  assets.release();
   waitForButtonRelease();
 }

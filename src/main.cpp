@@ -11,6 +11,7 @@
 #include "display_config.h"
 #include "falcon_logo.h"
 #include "game_menu.h"
+#include "game_assets.h"
 #include "power_down_sound.h"
 
 #ifndef FALCON_GAME_MODE_ONLY
@@ -525,6 +526,8 @@ void setup() {
 
   tft.init();
   tft.setRotation(DISPLAY_ROTATION);
+  initGameAssets();
+  startGameAssetSync();
 
   drawSplashScreen();
   digitalWrite(BACKLIGHT_PIN, HIGH);

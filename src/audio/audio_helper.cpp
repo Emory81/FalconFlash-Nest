@@ -3,9 +3,8 @@
 #include <Arduino.h>
 
 namespace {
-// Temporarily silences every sound (boot, delivery, power-down, games).
-// Set to false to turn sound back on.
-constexpr bool AUDIO_MUTED = true;
+// Set to true only when testing without the speaker connected.
+constexpr bool AUDIO_MUTED = false;
 constexpr uint8_t SPEAKER_ENABLE_PIN = 4;
 constexpr uint8_t AUDIO_DAC_PIN = 26;
 constexpr uint8_t DAC_MIN = 0;

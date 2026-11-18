@@ -11,7 +11,10 @@
 namespace {
 constexpr char WIFI_SSID[] = "Messiah Guest";
 constexpr char WIFI_PASSWORD[] = "";
-constexpr char BASE_URL[] = "https://falconflash.emory.work/api";
+#ifndef FALCON_API_BASE_URL
+#define FALCON_API_BASE_URL "https://falconflash.emory.work/api"
+#endif
+constexpr char BASE_URL[] = FALCON_API_BASE_URL;
 constexpr char WIFI_CHANNEL_KEY[] = "wifi_channel";
 constexpr char WIFI_BSSID_KEY[] = "wifi_bssid";
 constexpr char OTA_RESUME_BUTTON_KEY[] = "ota_resume_btn";

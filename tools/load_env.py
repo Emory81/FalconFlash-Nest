@@ -29,6 +29,10 @@ if missing:
 
 game_mode_value = dotenv.get("GAME_MODE_ONLY", "false").lower()
 game_mode_only = "1" if game_mode_value in ("1", "true", "yes", "on") else "0"
+api_base_url = dotenv.get(
+    "FALCON_API_BASE_URL",
+    "https://falconflash.emory.work/api",
+).rstrip("/")
 game_asset_base_url = dotenv.get(
     "FALCON_GAME_ASSET_BASE_URL",
     "https://raw.githubusercontent.com/Emory81/FalconFlash-Nest/main/game_assets",
@@ -93,6 +97,7 @@ env.Append(
     CPPDEFINES=[
         ("FALCON_FACTORY_ID", c_string(dotenv["FALCON_FACTORY_ID"])),
         ("FALCON_FACTORY_SECRET", c_string(dotenv["FALCON_FACTORY_SECRET"])),
+        ("FALCON_API_BASE_URL", c_string(api_base_url)),
         ("FALCON_FIRMWARE_VERSION", c_string(build_version)),
         ("FALCON_GITHUB_REPO", c_string(dotenv.get("FALCON_GITHUB_REPO", ""))),
         ("FALCON_FIRMWARE_ASSET",

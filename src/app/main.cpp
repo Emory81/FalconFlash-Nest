@@ -323,8 +323,8 @@ void playThankYouAnimation() {
 }
 
 bool gameButtonPressed() {
-  // Any physical button opens Games from the status screen.
-  return readButtonEvent() != Button::None;
+  // Only BTN1 opens Games from the order status screen.
+  return readButtonEvent() == Button::Button1;
 }
 
 Button waitForPowerButton() {
@@ -412,16 +412,7 @@ String flyerAssignedLabel(const OrderStatus& status) {
   if (status.flasherName.length() == 0) {
     return String("Flyer Assigned");
   }
-
-  for (uint16_t index = 0; index < status.flasherName.length(); ++index) {
-    if (isAlpha(status.flasherName[index])) {
-      String label;
-      label += status.flasherName[index];
-      label += ". Assigned";
-      return label;
-    }
-  }
-  return String("Flyer Assigned");
+  return status.flasherName;
 }
 
 uint8_t orderStatusStage(const OrderStatus& status) {

@@ -7,7 +7,8 @@
 
 void startDeviceWiFi();
 bool deviceWiFiConnected();
-bool checkForFirmwareUpdate();
+bool checkForFirmwareUpdate(TFT_eSPI& display, uint8_t wakeButtonNumber);
+uint8_t takeOtaResumeButton();
 bool ensureDevicePaired(TFT_eSPI& display);
 enum class DevicePriceStatus : uint8_t {
   Success,

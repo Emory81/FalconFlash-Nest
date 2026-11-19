@@ -7,20 +7,17 @@
 #include "audio/boot_sound.h"
 #include "audio/delivery_sound.h"
 #include "audio/power_down_sound.h"
+#include "device_config.h"
 #include "display/display_config.h"
 #include "display/falcon_logo.h"
+#include "game_assets.h"
 #include "games/game_menu.h"
 #include "input/button_input.h"
 #include "network/device_network.h"
 
-#ifndef FALCON_GAME_MODE_ONLY
-#define FALCON_GAME_MODE_ONLY 0
-#endif
-
 namespace {
 constexpr uint8_t BACKLIGHT_PIN = 21;
 constexpr uint8_t BUTTON_WAKE_PIN = 35;
-constexpr bool GAME_MODE_ONLY = FALCON_GAME_MODE_ONLY != 0;
 constexpr int16_t LOGO_TEXT_GAP = 4;
 constexpr uint32_t DEMO_HOLD_MS = 1000;
 constexpr uint32_t COUNTDOWN_DURATION_MS = 15000;
@@ -608,6 +605,13 @@ bool orderIsDelivered(const OrderStatus& status) {
          normalizedStatus.indexOf("deliver") >= 0;
 }
 
+bool orderIsCanceledOrRefunded(const OrderStatus& status) {
+  String normalizedStatus = status.orderStatus;
+  normalizedStatus.toLowerCase();
+  return normalizedStatus.indexOf("cancel") >= 0 ||
+         normalizedStatus.indexOf("refund") >= 0;
+}
+
 void animateOrderTimeline(TFT_eSprite& screen, bool& useSprite,
                           const String& orderId, const OrderStatus& status,
                           bool hasStatus, int16_t& scrollOffset,
@@ -661,6 +665,7 @@ void showOrderStatus(const String& orderId, bool demoMode) {
   uint8_t activeStage = 0;
   int16_t scrollOffset = 0;
   uint32_t nextPollAt = 0;
+  bool canceledOrRefunded = false;
   uint32_t nextDemoStageAt = millis() + ORDER_STATUS_HOLD_MS;
 
   if (demoMode) {
@@ -692,6 +697,9 @@ void showOrderStatus(const String& orderId, bool demoMode) {
         const uint8_t targetStage = orderStatusStage(latestStatus);
         status = latestStatus;
         hasStatus = true;
+        if (orderIsCanceledOrRefunded(status)) {
+          canceledOrRefunded = true;
+        }
         if (targetStage > activeStage) {
           animateOrderTimeline(screen, useSprite, orderId, status, true,
                                 scrollOffset, activeStage, targetStage);
@@ -710,11 +718,18 @@ void showOrderStatus(const String& orderId, bool demoMode) {
                             scrollOffset, activeStage);
     }
 
-    if (!demoMode && hasStatus && orderIsDelivered(status)) {
+    if (!demoMode && hasStatus &&
+        (orderIsDelivered(status) || canceledOrRefunded)) {
       break;
     }
 
     delay(50);
+  }
+
+  if (canceledOrRefunded) {
+    screen.deleteSprite();
+    enterStandby(false);
+    return;
   }
 
   for (uint8_t repeat = 0; repeat < DELIVERY_SOUND_REPEATS; ++repeat) {
@@ -841,6 +856,8 @@ void runCountdownTimer(const char* priceText, bool demoMode,
   drawFullTimerRing(centerX, centerY);
   drawTimerSeconds(centerX, centerY, 15);
   drawCancelHint(centerX);
+  startGameAssetPrefetch();
+  startGameAssetMemoryPreload();
 
   float erasedDegrees = 0.0f;
   uint8_t lastSecondsLeft = 15;
@@ -928,8 +945,17 @@ void setup() {
   pinMode(BACKLIGHT_PIN, OUTPUT);
   digitalWrite(BACKLIGHT_PIN, LOW);
 
+  initDeviceConfig();
   initButtons();
-  const Button wakeButton = waitForPowerButton();
+  const uint8_t otaResumeButton = takeOtaResumeButton();
+  const Button wakeButton =
+      otaResumeButton == 0 ? waitForPowerButton()
+                           : static_cast<Button>(otaResumeButton);
+  if (otaResumeButton != 0) {
+    // A software restart has no deep-sleep wake cause. Resume the original
+    // order button and reconnect instead of immediately sleeping again.
+    startDeviceWiFi();
+  }
 
   tft.init();
   tft.setRotation(DISPLAY_ROTATION);
@@ -938,19 +964,21 @@ void setup() {
   digitalWrite(BACKLIGHT_PIN, HIGH);
   playBootSound();
   const bool demoMode = detectDemoMode();
-  checkForFirmwareUpdate();
-  if (GAME_MODE_ONLY) {
+  if (deviceConfig().gameModeOnly) {
+    checkForFirmwareUpdate(tft, static_cast<uint8_t>(wakeButton));
     showGameMenu(tft, true);
     enterStandby(true);
     return;
   }
 
   if (demoMode) {
+    checkForFirmwareUpdate(tft, static_cast<uint8_t>(wakeButton));
     runCountdownTimer("DEMO $4.25", true, 0, 0);
     return;
   }
 
   ensureDevicePaired(tft);
+  checkForFirmwareUpdate(tft, static_cast<uint8_t>(wakeButton));
   String priceText;
   uint8_t savedPickupLocationMask = 0;
   const uint8_t orderButtonNumber = static_cast<uint8_t>(wakeButton);

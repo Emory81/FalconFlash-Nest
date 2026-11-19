@@ -286,11 +286,17 @@ bool showGameMenu(TFT_eSPI& display, bool gameModeOnly) {
 
   FlappyAssets flappyAssets;
   SuperFlashyAssets superAssets;
-  while (!loadFlappyAssets(flappyAssets) ||
-         !loadSuperFlashyAssets(superAssets)) {
-    flappyAssets.release();
-    superAssets.release();
-    ensureGameAssets(display);
+  bool loaded = takePreloadedGameAssets(flappyAssets, superAssets);
+  while (!loaded) {
+    const bool flappyLoaded = loadFlappyAssets(flappyAssets);
+    const bool superLoaded = loadSuperFlashyAssets(superAssets);
+    if (!flappyLoaded || !superLoaded) {
+      flappyAssets.release();
+      superAssets.release();
+      ensureGameAssets(display);
+    } else {
+      loaded = true;
+    }
   }
   drawMenu(display, selectedIndex, flappyAssets, superAssets);
 

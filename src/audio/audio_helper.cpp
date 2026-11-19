@@ -2,11 +2,9 @@
 
 #include <Arduino.h>
 
+#include "device_config.h"
+
 namespace {
-#ifndef FALCON_AUDIO_MUTED
-#define FALCON_AUDIO_MUTED 0
-#endif
-constexpr bool AUDIO_MUTED = FALCON_AUDIO_MUTED != 0;
 constexpr uint8_t SPEAKER_ENABLE_PIN = 4;
 constexpr uint8_t AUDIO_DAC_PIN = 26;
 constexpr uint8_t DAC_MIN = 0;
@@ -22,7 +20,7 @@ void audioBegin() {
 }
 
 void audioPlayTone(uint16_t frequency, uint16_t durationMs) {
-  if (AUDIO_MUTED) {
+  if (deviceConfig().audioMuted) {
     return;
   }
 

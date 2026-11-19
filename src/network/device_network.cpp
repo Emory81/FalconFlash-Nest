@@ -8,36 +8,18 @@
 #include <WiFiClientSecure.h>
 #include <esp_system.h>
 
+#include "device_config.h"
+
 namespace {
 constexpr char WIFI_SSID[] = "Messiah Guest";
 constexpr char WIFI_PASSWORD[] = "";
-#ifndef FALCON_API_BASE_URL
-#define FALCON_API_BASE_URL "https://falconflash.emory.work/api"
-#endif
-constexpr char BASE_URL[] = FALCON_API_BASE_URL;
 constexpr char WIFI_CHANNEL_KEY[] = "wifi_channel";
 constexpr char WIFI_BSSID_KEY[] = "wifi_bssid";
 constexpr char OTA_RESUME_BUTTON_KEY[] = "ota_resume_btn";
-#ifndef FALCON_FACTORY_ID
-#error "FALCON_FACTORY_ID must be set in .env"
-#endif
-#ifndef FALCON_FACTORY_SECRET
-#error "FALCON_FACTORY_SECRET must be set in .env"
-#endif
 #ifndef FALCON_FIRMWARE_VERSION
-#error "FALCON_FIRMWARE_VERSION must be set in .env"
+#define FALCON_FIRMWARE_VERSION "0.0.0-dev"
 #endif
-#ifndef FALCON_GITHUB_REPO
-#error "FALCON_GITHUB_REPO must be set in .env"
-#endif
-#ifndef FALCON_FIRMWARE_ASSET
-#error "FALCON_FIRMWARE_ASSET must be set in .env"
-#endif
-constexpr char FACTORY_ID[] = FALCON_FACTORY_ID;
-constexpr char FACTORY_SECRET[] = FALCON_FACTORY_SECRET;
 constexpr char FIRMWARE_VERSION[] = FALCON_FIRMWARE_VERSION;
-constexpr char GITHUB_REPO[] = FALCON_GITHUB_REPO;
-constexpr char FIRMWARE_ASSET[] = FALCON_FIRMWARE_ASSET;
 constexpr char PAIRING_CODE_PATH[] = "/nest/device/pairing-code";
 constexpr char PAIRING_STATUS_PATH[] = "/nest/device/pairing-status";
 constexpr char PRICE_PATH[] = "/nest/device/price";
@@ -298,8 +280,9 @@ int postJson(const char* path, const String& body, bool useFactoryHeaders,
   WiFiClientSecure client;
   client.setInsecure();
 
+  const DeviceConfig& config = deviceConfig();
   HTTPClient http;
-  const String url = String(BASE_URL) + path;
+  const String url = config.apiBaseUrl + path;
   if (!http.begin(client, url)) {
     return -1;
   }
@@ -307,8 +290,8 @@ int postJson(const char* path, const String& body, bool useFactoryHeaders,
   http.addHeader("X-Firmware-Version", FIRMWARE_VERSION);
 
   if (useFactoryHeaders) {
-    http.addHeader("X-Nest-Factory-Id", FACTORY_ID);
-    http.addHeader("X-Nest-Factory-Secret", FACTORY_SECRET);
+    http.addHeader("X-Nest-Factory-Id", config.factoryId);
+    http.addHeader("X-Nest-Factory-Secret", config.factorySecret);
   }
   if (bearerToken.length() > 0) {
     http.addHeader("Authorization", "Bearer " + bearerToken);
@@ -327,8 +310,9 @@ int getJson(const String& path, String& response) {
   WiFiClientSecure client;
   client.setInsecure();
 
+  const DeviceConfig& config = deviceConfig();
   HTTPClient http;
-  const String url = String(BASE_URL) + path;
+  const String url = config.apiBaseUrl + path;
   if (!http.begin(client, url)) {
     return -1;
   }
@@ -482,7 +466,7 @@ bool installFirmwareUpdate(const String& firmwareUrl, TFT_eSPI& display,
 }
 
 String githubRepositoryPath() {
-  String repository = GITHUB_REPO;
+  String repository = deviceConfig().githubRepo;
   repository.trim();
 
   const int githubHostStart = repository.indexOf("github.com/");
@@ -524,7 +508,7 @@ String findFirmwareAssetUrl(const String& releaseJson) {
     }
     const String assetJson = releaseJson.substring(nameKeyStart);
     const String assetName = extractJsonString(assetJson, "name");
-    if (assetName == FIRMWARE_ASSET) {
+    if (assetName == deviceConfig().firmwareAsset) {
       return extractJsonString(assetJson, "browser_download_url");
     }
     searchFrom = nameKeyStart + 6;
@@ -534,7 +518,8 @@ String findFirmwareAssetUrl(const String& releaseJson) {
 
 bool checkForFirmwareUpdateInternal(TFT_eSPI& display,
                                     uint8_t wakeButtonNumber) {
-  if (GITHUB_REPO[0] == '\0' || WiFi.status() != WL_CONNECTED) {
+  if (deviceConfig().githubRepo.length() == 0 ||
+      WiFi.status() != WL_CONNECTED) {
     return false;
   }
 
@@ -642,7 +627,7 @@ bool deviceWiFiConnected() {
 }
 
 bool checkForFirmwareUpdate(TFT_eSPI& display, uint8_t wakeButtonNumber) {
-  if (GITHUB_REPO[0] == '\0') {
+  if (deviceConfig().githubRepo.length() == 0) {
     return false;
   }
 

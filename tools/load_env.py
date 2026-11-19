@@ -9,6 +9,8 @@ Import("env")
 
 def load_dotenv(path):
     values = {}
+    if not path.exists():
+        return values
     for raw_line in path.read_text(encoding="utf-8").splitlines():
         line = raw_line.strip()
         if not line or line.startswith("#") or "=" not in line:
@@ -20,25 +22,47 @@ def load_dotenv(path):
 
 project_dir = Path(env.subst("$PROJECT_DIR"))
 dotenv = load_dotenv(project_dir / ".env")
-required = ("FALCON_FACTORY_ID", "FALCON_FACTORY_SECRET")
-missing = [key for key in required if not dotenv.get(key)]
-if missing:
-    raise RuntimeError(
-        "Missing {} in .env".format(", ".join(missing))
-    )
+provisioning_value = os.environ.get("FALCON_PROVISION_CONFIG", "").lower()
+provisioning = provisioning_value in ("1", "true", "yes", "on")
 
-game_mode_value = dotenv.get("GAME_MODE_ONLY", "false").lower()
-game_mode_only = "1" if game_mode_value in ("1", "true", "yes", "on") else "0"
-audio_muted_value = dotenv.get("FALCON_AUDIO_MUTED", "false").lower()
-audio_muted = "1" if audio_muted_value in ("1", "true", "yes", "on") else "0"
-api_base_url = dotenv.get(
-    "FALCON_API_BASE_URL",
-    "https://falconflash.emory.work/api",
-).rstrip("/")
-game_asset_base_url = dotenv.get(
-    "FALCON_GAME_ASSET_BASE_URL",
-    "https://raw.githubusercontent.com/Emory81/FalconFlash-Nest/main/game_assets",
-)
+if provisioning:
+    required = ("FALCON_FACTORY_ID", "FALCON_FACTORY_SECRET")
+    missing = [key for key in required if not dotenv.get(key)]
+    if missing:
+        raise RuntimeError(
+            "Missing {} in .env for provisioning build".format(", ".join(missing))
+        )
+
+    game_mode_value = dotenv.get("GAME_MODE_ONLY", "false").lower()
+    audio_muted_value = dotenv.get("FALCON_AUDIO_MUTED", "false").lower()
+    provisioned_values = {
+        "FALCON_PROVISION_FACTORY_ID": dotenv["FALCON_FACTORY_ID"],
+        "FALCON_PROVISION_FACTORY_SECRET": dotenv["FALCON_FACTORY_SECRET"],
+        "FALCON_PROVISION_API_BASE_URL": dotenv.get(
+            "FALCON_API_BASE_URL",
+            "https://falconflash.emory.work/api",
+        ).rstrip("/"),
+        "FALCON_PROVISION_GITHUB_REPO": dotenv.get("FALCON_GITHUB_REPO", ""),
+        "FALCON_PROVISION_FIRMWARE_ASSET": dotenv.get(
+            "FALCON_FIRMWARE_ASSET", "firmware.bin"
+        ),
+        "FALCON_PROVISION_GAME_ASSET_URL": dotenv.get(
+            "FALCON_GAME_ASSET_BASE_URL",
+            "https://raw.githubusercontent.com/Emory81/FalconFlash-Nest/main/game_assets",
+        ),
+        "FALCON_PROVISION_GAME_MODE_ONLY": (
+            "1"
+            if game_mode_value in ("1", "true", "yes", "on")
+            else "0"
+        ),
+        "FALCON_PROVISION_AUDIO_MUTED": (
+            "1"
+            if audio_muted_value in ("1", "true", "yes", "on")
+            else "0"
+        ),
+    }
+else:
+    provisioned_values = {}
 
 
 def normalize_version(version):
@@ -95,18 +119,15 @@ def preserve_release_firmware(source, target, env):
     shutil.copy2(source_path, release_dir / "firmware.bin")
 
 
-env.Append(
-    CPPDEFINES=[
-        ("FALCON_FACTORY_ID", c_string(dotenv["FALCON_FACTORY_ID"])),
-        ("FALCON_FACTORY_SECRET", c_string(dotenv["FALCON_FACTORY_SECRET"])),
-        ("FALCON_API_BASE_URL", c_string(api_base_url)),
-        ("FALCON_FIRMWARE_VERSION", c_string(build_version)),
-        ("FALCON_GITHUB_REPO", c_string(dotenv.get("FALCON_GITHUB_REPO", ""))),
-        ("FALCON_FIRMWARE_ASSET",
-         c_string(dotenv.get("FALCON_FIRMWARE_ASSET", "firmware.bin"))),
-        ("FALCON_GAME_MODE_ONLY", game_mode_only),
-        ("FALCON_AUDIO_MUTED", audio_muted),
-        ("FALCON_GAME_ASSET_BASE_URL", c_string(game_asset_base_url)),
-    ]
-)
+cpp_defines = [
+    ("FALCON_CONFIG_PROVISIONING", "1" if provisioning else "0"),
+    ("FALCON_FIRMWARE_VERSION", c_string(build_version)),
+]
+for key, value in provisioned_values.items():
+    if key.endswith(("GAME_MODE_ONLY", "AUDIO_MUTED")):
+        cpp_defines.append((key, value))
+    else:
+        cpp_defines.append((key, c_string(value)))
+
+env.Append(CPPDEFINES=cpp_defines)
 env.AddPostAction("$BUILD_DIR/${PROGNAME}.bin", preserve_release_firmware)

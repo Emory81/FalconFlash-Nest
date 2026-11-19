@@ -64,6 +64,14 @@ bool initGameAssets();
 // This is called once the timer screen is visible.
 void startGameAssetPrefetch();
 
+// Start decoding the cached game graphics into RAM without blocking the
+// current screen. This is called once the timer screen is visible.
+void startGameAssetMemoryPreload();
+
+// Move the decoded graphics into the game menu's ownership. Returns false if
+// the background preload has not finished yet.
+bool takePreloadedGameAssets(FlappyAssets& flappy, SuperFlashyAssets& super);
+
 // Block until every manifest asset is cached and verified. A progress screen
 // remains visible while Wi-Fi/GitHub is unavailable and while files download.
 bool ensureGameAssets(TFT_eSPI& display);

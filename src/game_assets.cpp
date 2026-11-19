@@ -15,10 +15,7 @@
 #include <cstdlib>
 #include <cstring>
 
-#ifndef FALCON_GAME_ASSET_BASE_URL
-#define FALCON_GAME_ASSET_BASE_URL \
-  "https://raw.githubusercontent.com/Emory81/FalconFlash-Nest/main/game_assets"
-#endif
+#include "device_config.h"
 
 namespace {
 
@@ -47,6 +44,11 @@ String progressStatus;
 TaskHandle_t assetSyncTaskHandle = nullptr;
 volatile bool assetSyncTaskRunning = false;
 volatile bool assetSyncTaskSucceeded = false;
+TaskHandle_t assetMemoryPreloadTaskHandle = nullptr;
+volatile bool assetMemoryPreloadRunning = false;
+volatile bool assetMemoryPreloadReady = false;
+FlappyAssets preloadedFlappyAssets;
+SuperFlashyAssets preloadedSuperFlashyAssets;
 
 void drawAssetProgress(TFT_eSPI& display, const char* status,
                        uint32_t completed, uint32_t total) {
@@ -194,7 +196,7 @@ String cachePath(const ManifestEntry& entry) {
 }
 
 String remoteUrl(const char* path) {
-  String base = FALCON_GAME_ASSET_BASE_URL;
+  String base = deviceConfig().gameAssetBaseUrl;
   while (base.endsWith("/")) base.remove(base.length() - 1);
   return base + "/" + path;
 }
@@ -503,6 +505,37 @@ void assetSyncTask(void*) {
   vTaskDelete(nullptr);
 }
 
+void assetMemoryPreloadTask(void*) {
+  // Let the downloader finish before reading the manifest and its files.
+  while (assetSyncTaskRunning) {
+    vTaskDelay(pdMS_TO_TICKS(25));
+  }
+
+  FlappyAssets flappyAssets;
+  SuperFlashyAssets superAssets;
+  const bool succeeded = initGameAssets() &&
+                         loadFlappyAssets(flappyAssets) &&
+                         loadSuperFlashyAssets(superAssets);
+  if (succeeded) {
+    lockFilesystem();
+    preloadedFlappyAssets.release();
+    preloadedSuperFlashyAssets.release();
+    preloadedFlappyAssets = flappyAssets;
+    preloadedSuperFlashyAssets = superAssets;
+    flappyAssets = FlappyAssets{};
+    superAssets = SuperFlashyAssets{};
+    assetMemoryPreloadReady = true;
+    unlockFilesystem();
+  } else {
+    flappyAssets.release();
+    superAssets.release();
+  }
+
+  assetMemoryPreloadRunning = false;
+  assetMemoryPreloadTaskHandle = nullptr;
+  vTaskDelete(nullptr);
+}
+
 bool loadImage(const ManifestEntry* entries, size_t count, const char* path,
                const char* format, uint16_t width, uint16_t height,
                GameAssetImage& image) {
@@ -628,6 +661,42 @@ void startGameAssetPrefetch() {
     assetSyncTaskHandle = nullptr;
     assetSyncTaskRunning = false;
   }
+}
+
+void startGameAssetMemoryPreload() {
+  if (assetMemoryPreloadRunning || assetMemoryPreloadReady) return;
+  if (!filesystemReady && !initGameAssets()) return;
+
+  assetMemoryPreloadRunning = true;
+  const BaseType_t created = xTaskCreatePinnedToCore(
+      assetMemoryPreloadTask, "game_asset_ram", 8192, nullptr, 1,
+      &assetMemoryPreloadTaskHandle, 0);
+  if (created != pdPASS) {
+    assetMemoryPreloadTaskHandle = nullptr;
+    assetMemoryPreloadRunning = false;
+  }
+}
+
+bool takePreloadedGameAssets(FlappyAssets& flappy, SuperFlashyAssets& super) {
+  while (assetMemoryPreloadRunning) {
+    delay(10);
+  }
+
+  lockFilesystem();
+  if (!assetMemoryPreloadReady) {
+    unlockFilesystem();
+    return false;
+  }
+
+  flappy.release();
+  super.release();
+  flappy = preloadedFlappyAssets;
+  super = preloadedSuperFlashyAssets;
+  preloadedFlappyAssets = FlappyAssets{};
+  preloadedSuperFlashyAssets = SuperFlashyAssets{};
+  assetMemoryPreloadReady = false;
+  unlockFilesystem();
+  return true;
 }
 
 bool ensureGameAssets(TFT_eSPI& display) {

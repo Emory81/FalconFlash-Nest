@@ -9,6 +9,7 @@
 
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
+#include <freertos/task.h>
 #include <mbedtls/sha256.h>
 
 #include <cstdlib>
@@ -43,6 +44,9 @@ bool filesystemReady = false;
 SemaphoreHandle_t filesystemMutex = nullptr;
 bool progressScreenReady = false;
 String progressStatus;
+TaskHandle_t assetSyncTaskHandle = nullptr;
+volatile bool assetSyncTaskRunning = false;
+volatile bool assetSyncTaskSucceeded = false;
 
 void drawAssetProgress(TFT_eSPI& display, const char* status,
                        uint32_t completed, uint32_t total) {
@@ -331,7 +335,7 @@ bool fetchManifest(String& manifest) {
   return status == HTTP_CODE_OK && manifest.length() > 0;
 }
 
-bool downloadAsset(const ManifestEntry& entry, TFT_eSPI& display,
+bool downloadAsset(const ManifestEntry& entry, TFT_eSPI* display,
                    uint32_t completedBefore, uint32_t totalSize) {
   if (!validRelativePath(entry.path)) return false;
   const String target = cachePath(entry);
@@ -403,7 +407,10 @@ bool downloadAsset(const ManifestEntry& entry, TFT_eSPI& display,
     }
     total += read;
     lastDataAt = millis();
-    drawAssetProgress(display, entry.path, completedBefore + total, totalSize);
+    if (display != nullptr) {
+      drawAssetProgress(*display, entry.path, completedBefore + total,
+                        totalSize);
+    }
   }
 
   lockFilesystem();
@@ -446,7 +453,7 @@ bool manifestFilesComplete(const String& manifest) {
   return true;
 }
 
-bool synchronizeAssets(TFT_eSPI& display) {
+bool synchronizeAssets(TFT_eSPI* display) {
   String remoteManifest;
   if (!fetchManifest(remoteManifest)) return false;
 
@@ -461,7 +468,9 @@ bool synchronizeAssets(TFT_eSPI& display) {
     totalSize += entries[index].size;
     if (fileMatches(entries[index])) completed += entries[index].size;
   }
-  drawAssetProgress(display, "Checking files...", completed, totalSize);
+  if (display != nullptr) {
+    drawAssetProgress(*display, "Checking files...", completed, totalSize);
+  }
 
   for (size_t index = 0; index < count; ++index) {
     if (fileMatches(entries[index])) continue;
@@ -470,8 +479,28 @@ bool synchronizeAssets(TFT_eSPI& display) {
     }
     completed += entries[index].size;
   }
-  drawAssetProgress(display, "Finalizing...", totalSize, totalSize);
+  if (display != nullptr) {
+    drawAssetProgress(*display, "Finalizing...", totalSize, totalSize);
+  }
   return writeManifestAndReplace(remoteManifest);
+}
+
+void assetSyncTask(void*) {
+  bool succeeded = false;
+  if (initGameAssets()) {
+    const uint32_t startedAt = millis();
+    while (WiFi.status() != WL_CONNECTED &&
+           millis() - startedAt < HTTP_TIMEOUT_MS) {
+      delay(100);
+    }
+    if (WiFi.status() == WL_CONNECTED) {
+      succeeded = synchronizeAssets(nullptr);
+    }
+  }
+  assetSyncTaskSucceeded = succeeded;
+  assetSyncTaskRunning = false;
+  assetSyncTaskHandle = nullptr;
+  vTaskDelete(nullptr);
 }
 
 bool loadImage(const ManifestEntry* entries, size_t count, const char* path,
@@ -586,6 +615,21 @@ bool initGameAssets() {
   return true;
 }
 
+void startGameAssetPrefetch() {
+  if (assetSyncTaskRunning) return;
+  if (!filesystemReady && !initGameAssets()) return;
+
+  assetSyncTaskSucceeded = false;
+  assetSyncTaskRunning = true;
+  const BaseType_t created = xTaskCreatePinnedToCore(
+      assetSyncTask, "game_asset_sync", 8192, nullptr, 1,
+      &assetSyncTaskHandle, 0);
+  if (created != pdPASS) {
+    assetSyncTaskHandle = nullptr;
+    assetSyncTaskRunning = false;
+  }
+}
+
 bool ensureGameAssets(TFT_eSPI& display) {
   progressScreenReady = false;
   progressStatus = "";
@@ -594,6 +638,12 @@ bool ensureGameAssets(TFT_eSPI& display) {
     if (!filesystemReady && !initGameAssets()) {
       drawAssetProgress(display, "Storage unavailable - retrying", 0, 0);
       delay(RETRY_DELAY_MS);
+      continue;
+    }
+
+    if (assetSyncTaskRunning) {
+      drawAssetProgress(display, "Finishing game files...", 0, 0);
+      delay(100);
       continue;
     }
 
@@ -611,7 +661,7 @@ bool ensureGameAssets(TFT_eSPI& display) {
       continue;
     }
 
-    if (synchronizeAssets(display)) {
+    if (synchronizeAssets(&display)) {
       progressScreenReady = false;
       return true;
     }

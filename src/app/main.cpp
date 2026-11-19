@@ -9,6 +9,7 @@
 #include "audio/power_down_sound.h"
 #include "display/display_config.h"
 #include "display/falcon_logo.h"
+#include "game_assets.h"
 #include "games/game_menu.h"
 #include "input/button_input.h"
 #include "network/device_network.h"
@@ -323,8 +324,8 @@ void playThankYouAnimation() {
 }
 
 bool gameButtonPressed() {
-  // Only BTN1 opens Games from the order status screen.
-  return readButtonEvent() == Button::Button1;
+  // Any physical button opens Games from the status screen.
+  return readButtonEvent() != Button::None;
 }
 
 Button waitForPowerButton() {
@@ -412,7 +413,16 @@ String flyerAssignedLabel(const OrderStatus& status) {
   if (status.flasherName.length() == 0) {
     return String("Flyer Assigned");
   }
-  return status.flasherName;
+
+  for (uint16_t index = 0; index < status.flasherName.length(); ++index) {
+    if (isAlpha(status.flasherName[index])) {
+      String label;
+      label += status.flasherName[index];
+      label += ". Assigned";
+      return label;
+    }
+  }
+  return String("Flyer Assigned");
 }
 
 uint8_t orderStatusStage(const OrderStatus& status) {
@@ -832,6 +842,7 @@ void runCountdownTimer(const char* priceText, bool demoMode,
   drawFullTimerRing(centerX, centerY);
   drawTimerSeconds(centerX, centerY, 15);
   drawCancelHint(centerX);
+  startGameAssetPrefetch();
 
   float erasedDegrees = 0.0f;
   uint8_t lastSecondsLeft = 15;

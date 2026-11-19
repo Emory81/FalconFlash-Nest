@@ -60,6 +60,10 @@ struct SuperFlashyAssets {
 // intentionally non-formatting: a mount failure must not erase a valid cache.
 bool initGameAssets();
 
+// Start downloading missing game files without blocking the current screen.
+// This is called once the timer screen is visible.
+void startGameAssetPrefetch();
+
 // Block until every manifest asset is cached and verified. A progress screen
 // remains visible while Wi-Fi/GitHub is unavailable and while files download.
 bool ensureGameAssets(TFT_eSPI& display);

@@ -51,6 +51,7 @@ void drawPairingScreen(TFT_eSPI& display, const String& code,
   drawCenteredText(display, "Pair Device", 2, 22);
   drawCenteredText(display, "Enter this code:", 1, 56);
   drawCenteredText(display, code.c_str(), 4, 106);
+  drawCenteredText(display, "Go to: falconflash.co/nest", 1, 146);
   drawCenteredText(display, status, 1, 174);
 }
 

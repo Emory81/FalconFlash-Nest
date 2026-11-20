@@ -816,24 +816,33 @@ uint8_t selectPickupLocations(uint8_t initialMask) {
   TFT_eSprite menuFrame(&tft);
   menuFrame.setColorDepth(8);
   const bool useSprite = menuFrame.createSprite(tft.width(), tft.height());
+  bool needsRedraw = true;
 
   while (true) {
-    if (useSprite) {
-      drawPickupLocationMenu(menuFrame, selectedMask, activeRow, activeColumn);
-      menuFrame.pushSprite(0, 0);
-    } else {
-      drawPickupLocationMenu(tft, selectedMask, activeRow, activeColumn);
+    if (needsRedraw) {
+      if (useSprite) {
+        drawPickupLocationMenu(menuFrame, selectedMask, activeRow,
+                               activeColumn);
+        menuFrame.pushSprite(0, 0);
+      } else {
+        drawPickupLocationMenu(tft, selectedMask, activeRow, activeColumn);
+      }
+      needsRedraw = false;
     }
+
     const Button button = readButtonEvent();
     if (button == Button::Button1) {
       const uint8_t rowCount = activeColumn == 0 ? 3 : 2;
       activeRow = (activeRow + 1) % rowCount;
+      needsRedraw = true;
     } else if (button == Button::Button2) {
       activeColumn = (activeColumn + 1) % 2;
       activeRow = 0;
+      needsRedraw = true;
     } else if (button == Button::Button3) {
       const uint8_t activeIndex = activeRow * 2 + activeColumn;
       selectedMask ^= static_cast<uint8_t>(1U << activeIndex);
+      needsRedraw = true;
     } else if (button == Button::Button4) {
       waitForButtonRelease();
       menuFrame.deleteSprite();

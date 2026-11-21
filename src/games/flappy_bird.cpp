@@ -94,9 +94,8 @@ void playFlapSound() {
 }
 
 void playScoreSound() {
-  audioPlayTone(1175, 35);
-  delay(8);
-  audioPlayTone(1568, 45);
+  audioPlayTone(1175, 20);
+  audioPlayTone(1568, 28);
 }
 
 void playGameOverSound() {
@@ -496,6 +495,7 @@ void runFlappyBird(TFT_eSPI& display) {
     uint32_t flapStartedAt = lastFrame - 10 * FLAP_FRAME_MS;  // start at rest
     uint32_t roundFlaps = 0;  // added to the lifetime counter when the round ends
     uint8_t pendingFlaps = 0;
+    bool scoreSoundPending = false;
 
     while (true) {
       const uint32_t now = millis();
@@ -571,7 +571,7 @@ void runFlappyBird(TFT_eSPI& display) {
           ++score;
           pipeSpeed = min(pipeSpeed + PIPE_SPEED_STEP, PIPE_SPEED_MAX);
           pipe.scored = true;
-          playScoreSound();
+          scoreSoundPending = true;
         }
 
         const int16_t gapBottom = pipe.gapTop + GAP_HEIGHT;
@@ -611,6 +611,10 @@ void runFlappyBird(TFT_eSPI& display) {
         drawBackground(display, nullptr, assets);
         drawFrame(display, assets, birdY, birdVelocity, pipeSpeed, pipes,
                   pipeCount, score, bestAtStart, flapStartedAt);
+      }
+      if (scoreSoundPending) {
+        playScoreSound();
+        scoreSoundPending = false;
       }
     }
 

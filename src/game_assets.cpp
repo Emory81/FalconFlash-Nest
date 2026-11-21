@@ -677,6 +677,18 @@ void startGameAssetMemoryPreload() {
   }
 }
 
+void prepareGameAssetsForOrderRequest() {
+  while (assetSyncTaskRunning || assetMemoryPreloadRunning) {
+    delay(20);
+  }
+
+  lockFilesystem();
+  preloadedFlappyAssets.release();
+  preloadedSuperFlashyAssets.release();
+  assetMemoryPreloadReady = false;
+  unlockFilesystem();
+}
+
 bool takePreloadedGameAssets(FlappyAssets& flappy, SuperFlashyAssets& super) {
   while (assetMemoryPreloadRunning) {
     delay(10);

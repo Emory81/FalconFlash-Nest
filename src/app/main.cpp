@@ -4,6 +4,7 @@
 
 #include <cstdio>
 
+#include "audio/audio_helper.h"
 #include "audio/boot_sound.h"
 #include "audio/delivery_sound.h"
 #include "audio/power_down_sound.h"
@@ -52,12 +53,21 @@ constexpr uint32_t DELIVERY_SOUND_GAP_MS = 1000;
 constexpr uint32_t POST_DELIVERY_STANDBY_MS = 15000;
 constexpr uint8_t PRICE_FETCH_RETRIES = 3;
 constexpr uint32_t PRICE_FETCH_RETRY_DELAY_MS = 500;
+constexpr uint8_t ORDER_SUBMIT_RETRIES = 3;
 constexpr uint8_t PICKUP_LOCATION_COUNT = 5;
 constexpr int16_t PICKUP_MENU_TILE_WIDTH = 148;
 constexpr int16_t PICKUP_MENU_TILE_HEIGHT = 48;
 constexpr int16_t PICKUP_MENU_GAP = 8;
 constexpr int16_t PICKUP_MENU_LEFT = 8;
 constexpr int16_t PICKUP_MENU_TOP = 42;
+constexpr uint32_t MESSAGE_NOTIFICATION_DURATION_MS = 5000;
+constexpr uint32_t MESSAGE_NOTIFICATION_EXTRA_LINE_MS = 1500;
+constexpr uint8_t MAX_MESSAGE_NOTIFICATIONS = 4;
+constexpr uint8_t MESSAGE_POLL_LIMIT = 20;
+constexpr uint8_t MESSAGE_MAX_LINES = 8;
+constexpr uint8_t MESSAGE_CHARS_PER_LINE = 40;
+constexpr int16_t MESSAGE_TEXT_LINE_HEIGHT = 10;
+constexpr int16_t MESSAGE_PANEL_WIDTH = 296;
 
 struct PickupLocationDisplay {
   const char* shortName;
@@ -71,6 +81,13 @@ constexpr PickupLocationDisplay PICKUP_LOCATIONS[PICKUP_LOCATION_COUNT] = {
     {"Right Side", "Pasta etc.", ""},
     {"Back Side", "Coffee, Specialty", "drinks etc."},
     {"uCreate", "", ""},
+};
+
+struct MessageNotificationState {
+  DeviceMessage messages[MAX_MESSAGE_NOTIFICATIONS];
+  uint8_t count = 0;
+  uint32_t expiresAt = 0;
+  uint32_t durationMs = MESSAGE_NOTIFICATION_DURATION_MS;
 };
 
 TFT_eSPI tft;
@@ -255,6 +272,34 @@ void drawProcessingOrder() {
                  tft.height() / 2);
 }
 
+void drawOrderSubmitFailed(const String& detail) {
+  tft.fillScreen(TFT_BLACK);
+  tft.setTextFont(1);
+  tft.setTextSize(2);
+  tft.setTextColor(TFT_WHITE, TFT_BLACK);
+  tft.setTextDatum(MC_DATUM);
+  tft.drawString("Order request failed", tft.width() / 2, 92);
+  tft.setTextSize(1);
+  String firstLine = detail;
+  String secondLine;
+  constexpr uint8_t MAX_LINE_LENGTH = 42;
+  if (firstLine.length() > MAX_LINE_LENGTH) {
+    int splitAt = firstLine.lastIndexOf(' ', MAX_LINE_LENGTH);
+    if (splitAt < 1) {
+      splitAt = MAX_LINE_LENGTH;
+    }
+    secondLine = firstLine.substring(splitAt + 1);
+    firstLine = firstLine.substring(0, splitAt);
+  }
+  tft.drawString(firstLine.length() > 0 ? firstLine.c_str()
+                                        : "Please try again",
+                 tft.width() / 2, 128);
+  if (secondLine.length() > 0) {
+    tft.drawString(secondLine.substring(0, MAX_LINE_LENGTH).c_str(),
+                   tft.width() / 2, 145);
+  }
+}
+
 void drawThankYouBlock(TFT_eSPI& display, int16_t x, int16_t thankY,
                        int16_t youY) {
   display.setTextFont(1);
@@ -289,7 +334,8 @@ void animateThankYouScroll(int16_t fromX, int16_t toX, int16_t thankY,
   sprite.deleteSprite();
 }
 
-void playThankYouAnimation() {
+void playThankYouAnimation(const String* orderId = nullptr,
+                           OrderStatus* initialStatus = nullptr) {
   const int16_t screenW = tft.width();
   const int16_t screenH = tft.height();
   const int16_t centerX = screenW / 2;
@@ -312,7 +358,15 @@ void playThankYouAnimation() {
 
   animateThankYouScroll(startX, endX, thankYInBand, youYInBand, bandTop,
                         bandHeight, THANK_YOU_SCROLL_IN_MS);
-  delay(THANK_YOU_HOLD_MS);
+  const uint32_t holdStartedAt = millis();
+  if (orderId != nullptr && initialStatus != nullptr) {
+    while (!fetchOrderStatus(*orderId, *initialStatus)) {
+      delay(1000);
+    }
+  }
+  while (millis() - holdStartedAt < THANK_YOU_HOLD_MS) {
+    delay(20);
+  }
   animateThankYouScroll(endX, exitX, thankYInBand, youYInBand, bandTop,
                         bandHeight, THANK_YOU_SCROLL_OUT_MS);
 
@@ -368,6 +422,153 @@ void drawGameButton(TFT_eSPI& display) {
                      GAME_BUTTON_Y + GAME_BUTTON_H / 2);
 }
 
+String messageLineAt(const String& message, uint8_t targetLine) {
+  String remaining = message;
+  remaining.trim();
+
+  for (uint8_t line = 0; line <= targetLine && line < MESSAGE_MAX_LINES;
+       ++line) {
+    if (remaining.length() == 0) {
+      return String();
+    }
+
+    int splitAt = MESSAGE_CHARS_PER_LINE;
+    if (remaining.length() <= MESSAGE_CHARS_PER_LINE) {
+      splitAt = remaining.length();
+    } else {
+      const int lastSpace =
+          remaining.lastIndexOf(' ', MESSAGE_CHARS_PER_LINE);
+      if (lastSpace > 0) {
+        splitAt = lastSpace;
+      }
+    }
+
+    String currentLine = remaining.substring(0, splitAt);
+    currentLine.trim();
+    remaining = remaining.substring(splitAt);
+    remaining.trim();
+
+    if (line == targetLine) {
+      if (line == MESSAGE_MAX_LINES - 1 && remaining.length() > 0) {
+        currentLine += "...";
+      }
+      return currentLine;
+    }
+  }
+  return String();
+}
+
+uint8_t messageLineCount(const String& message) {
+  uint8_t count = 0;
+  while (count < MESSAGE_MAX_LINES &&
+         messageLineAt(message, count).length() > 0) {
+    ++count;
+  }
+  return count > 0 ? count : 1;
+}
+
+void appendMessageNotification(MessageNotificationState& state,
+                               const DeviceMessage& message) {
+  if (state.count > 0 &&
+      static_cast<int32_t>(state.expiresAt - millis()) <= 0) {
+    state.count = 0;
+  }
+  if (state.count == MAX_MESSAGE_NOTIFICATIONS) {
+    for (uint8_t index = 1; index < state.count; ++index) {
+      state.messages[index - 1] = state.messages[index];
+    }
+    --state.count;
+  }
+  state.messages[state.count++] = message;
+  uint8_t totalLines = 0;
+  for (uint8_t index = 0; index < state.count; ++index) {
+    totalLines += messageLineCount(state.messages[index].message);
+  }
+  if (totalLines == 0) {
+    totalLines = 1;
+  }
+  state.durationMs =
+      MESSAGE_NOTIFICATION_DURATION_MS +
+      static_cast<uint32_t>(totalLines - 1) *
+          MESSAGE_NOTIFICATION_EXTRA_LINE_MS;
+  state.expiresAt = millis() + state.durationMs;
+}
+
+bool messageNotificationActive(MessageNotificationState& state) {
+  if (state.count == 0) {
+    return false;
+  }
+  if (static_cast<int32_t>(state.expiresAt - millis()) <= 0) {
+    state.count = 0;
+    return false;
+  }
+  return true;
+}
+
+void drawMessageNotificationOverlay(TFT_eSPI& display,
+                                    const MessageNotificationState& state) {
+  const int32_t remainingSigned =
+      static_cast<int32_t>(state.expiresAt - millis());
+  if (state.count == 0 || remainingSigned <= 0) {
+    return;
+  }
+
+  int16_t panelHeight = 28;
+  for (uint8_t index = 0; index < state.count; ++index) {
+    const uint8_t lines = messageLineCount(state.messages[index].message);
+    panelHeight += 24 + lines * MESSAGE_TEXT_LINE_HEIGHT;
+  }
+  const int16_t panelX = (display.width() - MESSAGE_PANEL_WIDTH) / 2;
+  const int16_t panelY = (display.height() - panelHeight) / 2;
+  const int16_t bubbleX = panelX + 14;
+  const int16_t bubbleWidth = MESSAGE_PANEL_WIDTH - 28;
+
+  display.fillRoundRect(panelX, panelY, MESSAGE_PANEL_WIDTH, panelHeight, 10,
+                        TFT_DARKGREY);
+  display.drawRoundRect(panelX, panelY, MESSAGE_PANEL_WIDTH, panelHeight, 10,
+                        TFT_WHITE);
+  display.setTextFont(1);
+  display.setTextSize(1);
+  display.setTextDatum(TL_DATUM);
+
+  int16_t contentY = panelY + 7;
+  for (uint8_t index = 0; index < state.count; ++index) {
+    const DeviceMessage& message = state.messages[index];
+    display.setTextColor(TFT_WHITE, TFT_DARKGREY);
+    display.drawString(
+        message.flyerName.length() > 0 ? message.flyerName.c_str() : "Flyer",
+        bubbleX, contentY);
+    contentY += 10;
+
+    const uint8_t lines = messageLineCount(message.message);
+    const int16_t bubbleHeight =
+        10 + lines * MESSAGE_TEXT_LINE_HEIGHT;
+    display.fillRoundRect(bubbleX, contentY, bubbleWidth, bubbleHeight, 8,
+                          TFT_WHITE);
+    display.setTextColor(TFT_BLACK, TFT_WHITE);
+    for (uint8_t line = 0; line < lines; ++line) {
+      display.drawString(messageLineAt(message.message, line).c_str(),
+                         bubbleX + 8,
+                         contentY + 5 + line * MESSAGE_TEXT_LINE_HEIGHT);
+    }
+    contentY += bubbleHeight + 4;
+  }
+
+  const uint16_t barWidth = MESSAGE_PANEL_WIDTH - 16;
+  const uint32_t durationMs =
+      state.durationMs > 0 ? state.durationMs
+                           : MESSAGE_NOTIFICATION_DURATION_MS;
+  const uint16_t remainingWidth = static_cast<uint16_t>(
+      barWidth * static_cast<uint32_t>(remainingSigned) /
+      durationMs);
+  display.fillRect(panelX + 8, panelY + panelHeight - 7, barWidth, 3,
+                   TFT_DARKGREY);
+  if (remainingWidth > 0) {
+    display.fillRect(panelX + 8, panelY + panelHeight - 7, remainingWidth, 3,
+                     TFT_WHITE);
+  }
+}
+
 String formatOrderTime(const String& timestamp) {
   int timeSeparator = timestamp.indexOf('T');
   if (timeSeparator < 0) {
@@ -410,15 +611,7 @@ String flyerAssignedLabel(const OrderStatus& status) {
     return String("Flyer Assigned");
   }
 
-  for (uint16_t index = 0; index < status.flasherName.length(); ++index) {
-    if (isAlpha(status.flasherName[index])) {
-      String label;
-      label += status.flasherName[index];
-      label += ". Assigned";
-      return label;
-    }
-  }
-  return String("Flyer Assigned");
+  return status.flasherName + " Assigned";
 }
 
 uint8_t orderStatusStage(const OrderStatus& status) {
@@ -451,7 +644,10 @@ String orderStageDescription(const OrderStatus& status, uint8_t stage) {
       }
       return String("Order placed");
     case 1:
-      return status.flasherAssigned ? flyerAssignedLabel(status)
+      if (status.flasherName.length() > 0) {
+        return flyerAssignedLabel(status);
+      }
+      return status.flasherAssigned ? String("Flyer Assigned")
                                     : String("Awaiting flasher");
     case 2:
       if (status.pickedUpAt.length() > 0 &&
@@ -474,7 +670,9 @@ String orderStageDescription(const OrderStatus& status, uint8_t stage) {
 
 void drawOrderTimelineFrame(TFT_eSPI& display, const String& orderId,
                             const OrderStatus& status, bool hasStatus,
-                            int16_t scrollOffset, uint8_t activeStage) {
+                            int16_t scrollOffset, uint8_t activeStage,
+                            const MessageNotificationState* notifications =
+                                nullptr) {
   const int16_t screenH = display.height();
   display.fillRect(0, 0, display.width(), display.height(), ORDER_BG);
 
@@ -530,6 +728,9 @@ void drawOrderTimelineFrame(TFT_eSPI& display, const String& orderId,
   }
 
   drawGameButton(display);
+  if (notifications != nullptr) {
+    drawMessageNotificationOverlay(display, *notifications);
+  }
 }
 
 bool waitForPostDeliveryStandby() {
@@ -560,7 +761,8 @@ bool createTimelineSprite(TFT_eSprite& screen) {
 void showGamesFromTimeline(TFT_eSprite& screen, bool& useSprite,
                            const String& orderId, const OrderStatus& status,
                            bool hasStatus, int16_t scrollOffset,
-                           uint8_t activeStage) {
+                           uint8_t activeStage,
+                           const MessageNotificationState* notifications) {
   // The game needs the same large sprite buffer. Release the timeline buffer
   // first so the game does not silently fall back to direct, flickery drawing.
   screen.deleteSprite();
@@ -572,25 +774,26 @@ void showGamesFromTimeline(TFT_eSprite& screen, bool& useSprite,
   useSprite = createTimelineSprite(screen);
   if (useSprite) {
     drawOrderTimelineFrame(screen, orderId, status, hasStatus, scrollOffset,
-                           activeStage);
+                           activeStage, notifications);
     screen.pushSprite(0, 0);
   } else {
     drawOrderTimelineFrame(tft, orderId, status, hasStatus, scrollOffset,
-                           activeStage);
+                           activeStage, notifications);
   }
 }
 
 void presentOrderTimeline(TFT_eSprite& screen, bool useSprite,
                           const String& orderId, const OrderStatus& status,
                           bool hasStatus, int16_t scrollOffset,
-                          uint8_t activeStage) {
+                          uint8_t activeStage,
+                          const MessageNotificationState* notifications) {
   if (useSprite) {
     drawOrderTimelineFrame(screen, orderId, status, hasStatus, scrollOffset,
-                           activeStage);
+                           activeStage, notifications);
     screen.pushSprite(0, 0);
   } else {
     drawOrderTimelineFrame(tft, orderId, status, hasStatus, scrollOffset,
-                           activeStage);
+                           activeStage, notifications);
   }
 }
 
@@ -606,16 +809,22 @@ bool orderIsDelivered(const OrderStatus& status) {
 }
 
 bool orderIsCanceledOrRefunded(const OrderStatus& status) {
+  if (status.canceledOrRefunded) {
+    return true;
+  }
+
   String normalizedStatus = status.orderStatus;
   normalizedStatus.toLowerCase();
-  return normalizedStatus.indexOf("cancel") >= 0 ||
+  return normalizedStatus == "-1" ||
+         normalizedStatus.indexOf("cancel") >= 0 ||
          normalizedStatus.indexOf("refund") >= 0;
 }
 
 void animateOrderTimeline(TFT_eSprite& screen, bool& useSprite,
                           const String& orderId, const OrderStatus& status,
                           bool hasStatus, int16_t& scrollOffset,
-                          uint8_t startStage, uint8_t targetStage) {
+                          uint8_t startStage, uint8_t targetStage,
+                          const MessageNotificationState* notifications) {
   for (uint8_t stage = startStage + 1; stage <= targetStage; ++stage) {
     const int16_t startOffset = scrollOffset;
     const int16_t nextOffset =
@@ -630,18 +839,18 @@ void animateOrderTimeline(TFT_eSprite& screen, bool& useSprite,
           startOffset +
           static_cast<int16_t>((nextOffset - startOffset) * progress);
       presentOrderTimeline(screen, useSprite, orderId, status, hasStatus,
-                           scrollOffset, stage);
+                           scrollOffset, stage, notifications);
       if (gameButtonPressed()) {
         waitForButtonRelease();
         showGamesFromTimeline(screen, useSprite, orderId, status, hasStatus,
-                              scrollOffset, stage);
+                              scrollOffset, stage, notifications);
       }
       delay(ORDER_STATUS_FRAME_MS);
     }
 
     scrollOffset = nextOffset;
     presentOrderTimeline(screen, useSprite, orderId, status, hasStatus,
-                         scrollOffset, stage);
+                         scrollOffset, stage, notifications);
   }
 }
 
@@ -656,17 +865,30 @@ void setDemoOrderStage(OrderStatus& status, uint8_t stage) {
   }
 }
 
-void showOrderStatus(const String& orderId, bool demoMode) {
+void showOrderStatus(const String& orderId, bool demoMode,
+                     const OrderStatus* initialStatus = nullptr) {
   TFT_eSprite screen(&tft);
   bool useSprite = createTimelineSprite(screen);
 
   OrderStatus status = {};
-  bool hasStatus = false;
-  uint8_t activeStage = 0;
-  int16_t scrollOffset = 0;
-  uint32_t nextPollAt = 0;
-  bool canceledOrRefunded = false;
+  MessageNotificationState notifications;
+  bool hasStatus = initialStatus != nullptr;
+  uint8_t activeStage = initialStatus == nullptr
+                            ? 0
+                            : orderStatusStage(*initialStatus);
+  int16_t scrollOffset =
+      activeStage * static_cast<int16_t>(ORDER_TIMELINE_ROW_HEIGHT);
+  uint32_t nextPollAt =
+      initialStatus == nullptr ? 0 : millis() + ORDER_STATUS_POLL_MS;
+  uint32_t nextMessagePollAt = millis() + 3000;
+  uint32_t sinceMessageId = 0;
+  bool canceledOrRefunded =
+      initialStatus != nullptr && orderIsCanceledOrRefunded(*initialStatus);
   uint32_t nextDemoStageAt = millis() + ORDER_STATUS_HOLD_MS;
+
+  if (initialStatus != nullptr) {
+    status = *initialStatus;
+  }
 
   if (demoMode) {
     status.orderStatus = "0";
@@ -676,14 +898,27 @@ void showOrderStatus(const String& orderId, bool demoMode) {
     hasStatus = true;
   }
 
+  // Draw the prefetched status before any network polling so there is no
+  // blank pause after the Thank You animation leaves the screen.
+  presentOrderTimeline(screen, useSprite, orderId, status, hasStatus,
+                       scrollOffset, activeStage, &notifications);
+
   while (true) {
     const uint32_t now = millis();
+    const bool notificationWasVisible = notifications.count > 0;
+    const bool notificationActive =
+        messageNotificationActive(notifications);
+    if (notificationWasVisible && !notificationActive) {
+      presentOrderTimeline(screen, useSprite, orderId, status, hasStatus,
+                           scrollOffset, activeStage, &notifications);
+    }
     if (demoMode && now >= nextDemoStageAt) {
       if (activeStage < 3) {
         const uint8_t nextStage = activeStage + 1;
         setDemoOrderStage(status, nextStage);
         animateOrderTimeline(screen, useSprite, orderId, status, true,
-                              scrollOffset, activeStage, nextStage);
+                              scrollOffset, activeStage, nextStage,
+                              &notifications);
         activeStage = nextStage;
         nextDemoStageAt = millis() + ORDER_STATUS_HOLD_MS;
       } else {
@@ -691,7 +926,7 @@ void showOrderStatus(const String& orderId, bool demoMode) {
       }
     }
 
-    if (!demoMode && now >= nextPollAt) {
+    if (!demoMode && !notificationActive && now >= nextPollAt) {
       OrderStatus latestStatus = {};
       if (fetchOrderStatus(orderId, latestStatus)) {
         const uint8_t targetStage = orderStatusStage(latestStatus);
@@ -702,20 +937,39 @@ void showOrderStatus(const String& orderId, bool demoMode) {
         }
         if (targetStage > activeStage) {
           animateOrderTimeline(screen, useSprite, orderId, status, true,
-                                scrollOffset, activeStage, targetStage);
+                                scrollOffset, activeStage, targetStage,
+                                &notifications);
           activeStage = targetStage;
         }
       }
       nextPollAt = millis() + ORDER_STATUS_POLL_MS;
     }
 
+    if (!demoMode && !notificationActive &&
+        millis() >= nextMessagePollAt) {
+      DeviceMessage messages[MESSAGE_POLL_LIMIT];
+      uint8_t messageCount = 0;
+      uint32_t nextSinceMessageId = sinceMessageId;
+      const DeviceMessagePollStatus messageStatus = fetchDeviceMessages(
+          0, sinceMessageId, messages, MESSAGE_POLL_LIMIT, messageCount,
+          nextSinceMessageId);
+      if (messageStatus == DeviceMessagePollStatus::Success) {
+        for (uint8_t index = 0; index < messageCount; ++index) {
+          appendMessageNotification(notifications, messages[index]);
+          playMessageNotificationSound();
+        }
+        sinceMessageId = nextSinceMessageId;
+      }
+      nextMessagePollAt = millis() + 3000;
+    }
+
     presentOrderTimeline(screen, useSprite, orderId, status, hasStatus,
-                         scrollOffset, activeStage);
+                         scrollOffset, activeStage, &notifications);
 
     if (gameButtonPressed()) {
       waitForButtonRelease();
       showGamesFromTimeline(screen, useSprite, orderId, status, hasStatus,
-                            scrollOffset, activeStage);
+                            scrollOffset, activeStage, &notifications);
     }
 
     if (!demoMode && hasStatus &&
@@ -723,7 +977,7 @@ void showOrderStatus(const String& orderId, bool demoMode) {
       break;
     }
 
-    delay(50);
+    delay(ORDER_STATUS_FRAME_MS);
   }
 
   if (canceledOrRefunded) {
@@ -933,15 +1187,41 @@ void runCountdownTimer(const char* priceText, bool demoMode,
   if (!demoMode) {
     String orderId;
     String eventId;
-    const uint8_t pickupOverrideMask =
-        pickupLocationMask == savedPickupLocationMask ? 0 : pickupLocationMask;
+    // Always send the currently displayed pickup locations when available.
+    // Omitting the field for an unchanged default causes some saved-location
+    // orders to be rejected, while sending the same IDs is a valid override.
+    const uint8_t pickupOverrideMask = pickupLocationMask;
     drawProcessingOrder();
-    while (!submitDeviceOrder(orderButtonNumber, pickupOverrideMask, eventId,
-                              orderId)) {
+    prepareGameAssetsForOrderRequest();
+    DeviceOrderStatus orderStatus = DeviceOrderStatus::Unavailable;
+    String orderFailureDetail;
+    for (uint8_t attempt = 0; attempt < ORDER_SUBMIT_RETRIES; ++attempt) {
+      orderStatus = submitDeviceOrder(orderButtonNumber, pickupOverrideMask,
+                                      eventId, orderId, orderFailureDetail);
+      if (orderStatus == DeviceOrderStatus::Success ||
+          orderStatus == DeviceOrderStatus::Unarmed) {
+        break;
+      }
+      if (orderStatus == DeviceOrderStatus::NeedsPairing) {
+        ensureDevicePaired(tft);
+        drawProcessingOrder();
+      }
       delay(1000);
     }
-    playThankYouAnimation();
-    showOrderStatus(orderId, false);
+    if (orderStatus != DeviceOrderStatus::Success) {
+      if (orderStatus == DeviceOrderStatus::Unarmed) {
+        drawButtonUnarmed(orderButtonNumber);
+      } else {
+        drawOrderSubmitFailed(orderFailureDetail);
+      }
+      delay(2000);
+      enterStandby(false);
+      return;
+    }
+    startGameAssetMemoryPreload();
+    OrderStatus initialOrderStatus = {};
+    playThankYouAnimation(&orderId, &initialOrderStatus);
+    showOrderStatus(orderId, false, &initialOrderStatus);
     return;
   }
 

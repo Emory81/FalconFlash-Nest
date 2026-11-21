@@ -61,8 +61,12 @@ constexpr int16_t PICKUP_MENU_GAP = 8;
 constexpr int16_t PICKUP_MENU_LEFT = 8;
 constexpr int16_t PICKUP_MENU_TOP = 42;
 constexpr uint32_t MESSAGE_NOTIFICATION_DURATION_MS = 5000;
+constexpr uint32_t MESSAGE_NOTIFICATION_EXTRA_LINE_MS = 1500;
 constexpr uint8_t MAX_MESSAGE_NOTIFICATIONS = 4;
 constexpr uint8_t MESSAGE_POLL_LIMIT = 20;
+constexpr uint8_t MESSAGE_MAX_LINES = 8;
+constexpr uint8_t MESSAGE_CHARS_PER_LINE = 40;
+constexpr int16_t MESSAGE_TEXT_LINE_HEIGHT = 10;
 constexpr int16_t MESSAGE_PANEL_WIDTH = 296;
 
 struct PickupLocationDisplay {
@@ -83,6 +87,7 @@ struct MessageNotificationState {
   DeviceMessage messages[MAX_MESSAGE_NOTIFICATIONS];
   uint8_t count = 0;
   uint32_t expiresAt = 0;
+  uint32_t durationMs = MESSAGE_NOTIFICATION_DURATION_MS;
 };
 
 TFT_eSPI tft;
@@ -417,12 +422,49 @@ void drawGameButton(TFT_eSPI& display) {
                      GAME_BUTTON_Y + GAME_BUTTON_H / 2);
 }
 
-String notificationMessageText(const String& message) {
-  constexpr uint8_t MAX_MESSAGE_CHARS = 40;
-  if (message.length() <= MAX_MESSAGE_CHARS) {
-    return message;
+String messageLineAt(const String& message, uint8_t targetLine) {
+  String remaining = message;
+  remaining.trim();
+
+  for (uint8_t line = 0; line <= targetLine && line < MESSAGE_MAX_LINES;
+       ++line) {
+    if (remaining.length() == 0) {
+      return String();
+    }
+
+    int splitAt = MESSAGE_CHARS_PER_LINE;
+    if (remaining.length() <= MESSAGE_CHARS_PER_LINE) {
+      splitAt = remaining.length();
+    } else {
+      const int lastSpace =
+          remaining.lastIndexOf(' ', MESSAGE_CHARS_PER_LINE);
+      if (lastSpace > 0) {
+        splitAt = lastSpace;
+      }
+    }
+
+    String currentLine = remaining.substring(0, splitAt);
+    currentLine.trim();
+    remaining = remaining.substring(splitAt);
+    remaining.trim();
+
+    if (line == targetLine) {
+      if (line == MESSAGE_MAX_LINES - 1 && remaining.length() > 0) {
+        currentLine += "...";
+      }
+      return currentLine;
+    }
   }
-  return message.substring(0, MAX_MESSAGE_CHARS - 3) + "...";
+  return String();
+}
+
+uint8_t messageLineCount(const String& message) {
+  uint8_t count = 0;
+  while (count < MESSAGE_MAX_LINES &&
+         messageLineAt(message, count).length() > 0) {
+    ++count;
+  }
+  return count > 0 ? count : 1;
 }
 
 void appendMessageNotification(MessageNotificationState& state,
@@ -438,7 +480,18 @@ void appendMessageNotification(MessageNotificationState& state,
     --state.count;
   }
   state.messages[state.count++] = message;
-  state.expiresAt = millis() + MESSAGE_NOTIFICATION_DURATION_MS;
+  uint8_t totalLines = 0;
+  for (uint8_t index = 0; index < state.count; ++index) {
+    totalLines += messageLineCount(state.messages[index].message);
+  }
+  if (totalLines == 0) {
+    totalLines = 1;
+  }
+  state.durationMs =
+      MESSAGE_NOTIFICATION_DURATION_MS +
+      static_cast<uint32_t>(totalLines - 1) *
+          MESSAGE_NOTIFICATION_EXTRA_LINE_MS;
+  state.expiresAt = millis() + state.durationMs;
 }
 
 bool messageNotificationActive(MessageNotificationState& state) {
@@ -460,8 +513,11 @@ void drawMessageNotificationOverlay(TFT_eSPI& display,
     return;
   }
 
-  const int16_t panelHeight =
-      28 + state.count * 34;
+  int16_t panelHeight = 28;
+  for (uint8_t index = 0; index < state.count; ++index) {
+    const uint8_t lines = messageLineCount(state.messages[index].message);
+    panelHeight += 24 + lines * MESSAGE_TEXT_LINE_HEIGHT;
+  }
   const int16_t panelX = (display.width() - MESSAGE_PANEL_WIDTH) / 2;
   const int16_t panelY = (display.height() - panelHeight) / 2;
   const int16_t bubbleX = panelX + 14;
@@ -484,17 +540,27 @@ void drawMessageNotificationOverlay(TFT_eSPI& display,
         bubbleX, contentY);
     contentY += 10;
 
-    display.fillRoundRect(bubbleX, contentY, bubbleWidth, 20, 8, TFT_WHITE);
+    const uint8_t lines = messageLineCount(message.message);
+    const int16_t bubbleHeight =
+        10 + lines * MESSAGE_TEXT_LINE_HEIGHT;
+    display.fillRoundRect(bubbleX, contentY, bubbleWidth, bubbleHeight, 8,
+                          TFT_WHITE);
     display.setTextColor(TFT_BLACK, TFT_WHITE);
-    display.drawString(notificationMessageText(message.message).c_str(),
-                       bubbleX + 8, contentY + 6);
-    contentY += 24;
+    for (uint8_t line = 0; line < lines; ++line) {
+      display.drawString(messageLineAt(message.message, line).c_str(),
+                         bubbleX + 8,
+                         contentY + 5 + line * MESSAGE_TEXT_LINE_HEIGHT);
+    }
+    contentY += bubbleHeight + 4;
   }
 
   const uint16_t barWidth = MESSAGE_PANEL_WIDTH - 16;
+  const uint32_t durationMs =
+      state.durationMs > 0 ? state.durationMs
+                           : MESSAGE_NOTIFICATION_DURATION_MS;
   const uint16_t remainingWidth = static_cast<uint16_t>(
       barWidth * static_cast<uint32_t>(remainingSigned) /
-      MESSAGE_NOTIFICATION_DURATION_MS);
+      durationMs);
   display.fillRect(panelX + 8, panelY + panelHeight - 7, barWidth, 3,
                    TFT_DARKGREY);
   if (remainingWidth > 0) {

@@ -1,6 +1,8 @@
 #include <Arduino.h>
 #include <TFT_eSPI.h>
 #include <esp_sleep.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/semphr.h>
 
 #include <cstdio>
 
@@ -84,6 +86,19 @@ struct MessageNotificationState {
   uint8_t count = 0;
   uint32_t expiresAt = 0;
 };
+
+struct MessagePollWorker {
+  TaskHandle_t task = nullptr;
+  SemaphoreHandle_t mutex = nullptr;
+  volatile bool stopRequested = false;
+  volatile bool finished = false;
+  volatile bool paused = false;
+  bool resultReady = false;
+  DeviceMessage messages[MESSAGE_POLL_LIMIT];
+  uint8_t messageCount = 0;
+};
+
+MessagePollWorker* activeMessagePollWorker = nullptr;
 
 TFT_eSPI tft;
 
@@ -441,6 +456,103 @@ void appendMessageNotification(MessageNotificationState& state,
   state.expiresAt = millis() + MESSAGE_NOTIFICATION_DURATION_MS;
 }
 
+bool messageNotificationActive(MessageNotificationState& state) {
+  if (state.count == 0) {
+    return false;
+  }
+  if (static_cast<int32_t>(state.expiresAt - millis()) <= 0) {
+    state.count = 0;
+    return false;
+  }
+  return true;
+}
+
+void messagePollWorkerTask(void* parameter) {
+  auto* worker = static_cast<MessagePollWorker*>(parameter);
+  uint32_t sinceMessageId = 0;
+  uint32_t nextPollAt = 0;
+
+  while (!worker->stopRequested) {
+    if (!worker->paused && millis() >= nextPollAt) {
+      DeviceMessage messages[MESSAGE_POLL_LIMIT];
+      uint8_t messageCount = 0;
+      uint32_t nextSinceMessageId = sinceMessageId;
+      const DeviceMessagePollStatus result = fetchDeviceMessages(
+          0, sinceMessageId, messages, MESSAGE_POLL_LIMIT, messageCount,
+          nextSinceMessageId);
+      if (result == DeviceMessagePollStatus::Success) {
+        sinceMessageId = nextSinceMessageId;
+        if (messageCount > 0 &&
+            xSemaphoreTake(worker->mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+          for (uint8_t index = 0; index < messageCount; ++index) {
+            worker->messages[index] = messages[index];
+          }
+          worker->messageCount = messageCount;
+          worker->resultReady = true;
+          xSemaphoreGive(worker->mutex);
+        }
+      }
+      nextPollAt = millis() + 3000;
+    }
+    vTaskDelay(pdMS_TO_TICKS(10));
+  }
+
+  worker->finished = true;
+  vTaskDelete(nullptr);
+}
+
+bool startMessagePollWorker(MessagePollWorker& worker) {
+  worker.mutex = xSemaphoreCreateMutex();
+  if (worker.mutex == nullptr) {
+    return false;
+  }
+
+  const BaseType_t created = xTaskCreatePinnedToCore(
+      messagePollWorkerTask, "message_poll", 8192, &worker, 1,
+      &worker.task, 0);
+  if (created != pdPASS) {
+    vSemaphoreDelete(worker.mutex);
+    worker.mutex = nullptr;
+    return false;
+  }
+  return true;
+}
+
+void stopMessagePollWorker(MessagePollWorker& worker) {
+  if (worker.mutex == nullptr) {
+    return;
+  }
+
+  worker.stopRequested = true;
+  while (!worker.finished) {
+    delay(1);
+  }
+  vSemaphoreDelete(worker.mutex);
+  worker.mutex = nullptr;
+}
+
+void consumeMessagePollResults(MessagePollWorker& worker,
+                               MessageNotificationState& state) {
+  if (worker.mutex == nullptr ||
+      xSemaphoreTake(worker.mutex, 0) != pdTRUE) {
+    return;
+  }
+
+  DeviceMessage messages[MESSAGE_POLL_LIMIT];
+  const uint8_t messageCount =
+      worker.resultReady ? worker.messageCount : 0;
+  for (uint8_t index = 0; index < messageCount; ++index) {
+    messages[index] = worker.messages[index];
+  }
+  worker.resultReady = false;
+  xSemaphoreGive(worker.mutex);
+
+  for (uint8_t index = 0; index < messageCount; ++index) {
+    appendMessageNotification(state, messages[index]);
+    playMessageNotificationSound();
+  }
+}
+
 void drawMessageNotificationOverlay(TFT_eSPI& display,
                                     const MessageNotificationState& state) {
   const int32_t remainingSigned =
@@ -691,7 +803,13 @@ void showGamesFromTimeline(TFT_eSprite& screen, bool& useSprite,
   screen.deleteSprite();
   useSprite = false;
 
+  if (activeMessagePollWorker != nullptr) {
+    activeMessagePollWorker->paused = true;
+  }
   showGameMenu(tft);
+  if (activeMessagePollWorker != nullptr) {
+    activeMessagePollWorker->paused = false;
+  }
 
   // Recreate the timeline buffer after the game has released its buffer.
   useSprite = createTimelineSprite(screen);
@@ -803,8 +921,6 @@ void showOrderStatus(const String& orderId, bool demoMode,
       activeStage * static_cast<int16_t>(ORDER_TIMELINE_ROW_HEIGHT);
   uint32_t nextPollAt =
       initialStatus == nullptr ? 0 : millis() + ORDER_STATUS_POLL_MS;
-  uint32_t nextMessagePollAt = millis() + 3000;
-  uint32_t sinceMessageId = 0;
   bool canceledOrRefunded =
       initialStatus != nullptr && orderIsCanceledOrRefunded(*initialStatus);
   uint32_t nextDemoStageAt = millis() + ORDER_STATUS_HOLD_MS;
@@ -826,8 +942,20 @@ void showOrderStatus(const String& orderId, bool demoMode,
   presentOrderTimeline(screen, useSprite, orderId, status, hasStatus,
                        scrollOffset, activeStage, &notifications);
 
+  MessagePollWorker messagePollWorker;
+  const bool messagePollWorkerStarted =
+      !demoMode && startMessagePollWorker(messagePollWorker);
+  if (messagePollWorkerStarted) {
+    activeMessagePollWorker = &messagePollWorker;
+  }
+
   while (true) {
     const uint32_t now = millis();
+    if (messagePollWorkerStarted) {
+      consumeMessagePollResults(messagePollWorker, notifications);
+    }
+    const bool notificationActive =
+        messageNotificationActive(notifications);
     if (demoMode && now >= nextDemoStageAt) {
       if (activeStage < 3) {
         const uint8_t nextStage = activeStage + 1;
@@ -842,7 +970,7 @@ void showOrderStatus(const String& orderId, bool demoMode,
       }
     }
 
-    if (!demoMode && now >= nextPollAt) {
+    if (!demoMode && !notificationActive && now >= nextPollAt) {
       OrderStatus latestStatus = {};
       if (fetchOrderStatus(orderId, latestStatus)) {
         const uint8_t targetStage = orderStatusStage(latestStatus);
@@ -861,23 +989,6 @@ void showOrderStatus(const String& orderId, bool demoMode,
       nextPollAt = millis() + ORDER_STATUS_POLL_MS;
     }
 
-    if (!demoMode && millis() >= nextMessagePollAt) {
-      DeviceMessage messages[MESSAGE_POLL_LIMIT];
-      uint8_t messageCount = 0;
-      uint32_t nextSinceMessageId = sinceMessageId;
-      const DeviceMessagePollStatus messageStatus = fetchDeviceMessages(
-          0, sinceMessageId, messages, MESSAGE_POLL_LIMIT, messageCount,
-          nextSinceMessageId);
-      if (messageStatus == DeviceMessagePollStatus::Success) {
-        for (uint8_t index = 0; index < messageCount; ++index) {
-          appendMessageNotification(notifications, messages[index]);
-          playMessageNotificationSound();
-        }
-        sinceMessageId = nextSinceMessageId;
-      }
-      nextMessagePollAt = millis() + 3000;
-    }
-
     presentOrderTimeline(screen, useSprite, orderId, status, hasStatus,
                          scrollOffset, activeStage, &notifications);
 
@@ -893,6 +1004,12 @@ void showOrderStatus(const String& orderId, bool demoMode,
     }
 
     delay(ORDER_STATUS_FRAME_MS);
+  }
+
+  if (messagePollWorkerStarted) {
+    activeMessagePollWorker->paused = true;
+    stopMessagePollWorker(messagePollWorker);
+    activeMessagePollWorker = nullptr;
   }
 
   if (canceledOrRefunded) {

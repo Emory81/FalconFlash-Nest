@@ -27,6 +27,7 @@ struct OrderStatus {
   String flasherName;
   String pickedUpAt;
   String deliveredAt;
+  bool canceledOrRefunded;
   String orderPhoto;
 };
 

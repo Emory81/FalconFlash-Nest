@@ -329,7 +329,8 @@ void animateThankYouScroll(int16_t fromX, int16_t toX, int16_t thankY,
   sprite.deleteSprite();
 }
 
-void playThankYouAnimation() {
+void playThankYouAnimation(const String* orderId = nullptr,
+                           OrderStatus* initialStatus = nullptr) {
   const int16_t screenW = tft.width();
   const int16_t screenH = tft.height();
   const int16_t centerX = screenW / 2;
@@ -352,7 +353,15 @@ void playThankYouAnimation() {
 
   animateThankYouScroll(startX, endX, thankYInBand, youYInBand, bandTop,
                         bandHeight, THANK_YOU_SCROLL_IN_MS);
-  delay(THANK_YOU_HOLD_MS);
+  const uint32_t holdStartedAt = millis();
+  if (orderId != nullptr && initialStatus != nullptr) {
+    while (!fetchOrderStatus(*orderId, *initialStatus)) {
+      delay(1000);
+    }
+  }
+  while (millis() - holdStartedAt < THANK_YOU_HOLD_MS) {
+    delay(20);
+  }
   animateThankYouScroll(endX, exitX, thankYInBand, youYInBand, bandTop,
                         bandHeight, THANK_YOU_SCROLL_OUT_MS);
 
@@ -525,15 +534,7 @@ String flyerAssignedLabel(const OrderStatus& status) {
     return String("Flyer Assigned");
   }
 
-  for (uint16_t index = 0; index < status.flasherName.length(); ++index) {
-    if (isAlpha(status.flasherName[index])) {
-      String label;
-      label += status.flasherName[index];
-      label += ". Assigned";
-      return label;
-    }
-  }
-  return String("Flyer Assigned");
+  return status.flasherName + " Assigned";
 }
 
 uint8_t orderStatusStage(const OrderStatus& status) {
@@ -566,7 +567,10 @@ String orderStageDescription(const OrderStatus& status, uint8_t stage) {
       }
       return String("Order placed");
     case 1:
-      return status.flasherAssigned ? flyerAssignedLabel(status)
+      if (status.flasherName.length() > 0) {
+        return flyerAssignedLabel(status);
+      }
+      return status.flasherAssigned ? String("Flyer Assigned")
                                     : String("Awaiting flasher");
     case 2:
       if (status.pickedUpAt.length() > 0 &&
@@ -728,9 +732,14 @@ bool orderIsDelivered(const OrderStatus& status) {
 }
 
 bool orderIsCanceledOrRefunded(const OrderStatus& status) {
+  if (status.canceledOrRefunded) {
+    return true;
+  }
+
   String normalizedStatus = status.orderStatus;
   normalizedStatus.toLowerCase();
-  return normalizedStatus.indexOf("cancel") >= 0 ||
+  return normalizedStatus == "-1" ||
+         normalizedStatus.indexOf("cancel") >= 0 ||
          normalizedStatus.indexOf("refund") >= 0;
 }
 
@@ -779,20 +788,30 @@ void setDemoOrderStage(OrderStatus& status, uint8_t stage) {
   }
 }
 
-void showOrderStatus(const String& orderId, bool demoMode) {
+void showOrderStatus(const String& orderId, bool demoMode,
+                     const OrderStatus* initialStatus = nullptr) {
   TFT_eSprite screen(&tft);
   bool useSprite = createTimelineSprite(screen);
 
   OrderStatus status = {};
   MessageNotificationState notifications;
-  bool hasStatus = false;
-  uint8_t activeStage = 0;
-  int16_t scrollOffset = 0;
-  uint32_t nextPollAt = 0;
-  uint32_t nextMessagePollAt = millis();
+  bool hasStatus = initialStatus != nullptr;
+  uint8_t activeStage = initialStatus == nullptr
+                            ? 0
+                            : orderStatusStage(*initialStatus);
+  int16_t scrollOffset =
+      activeStage * static_cast<int16_t>(ORDER_TIMELINE_ROW_HEIGHT);
+  uint32_t nextPollAt =
+      initialStatus == nullptr ? 0 : millis() + ORDER_STATUS_POLL_MS;
+  uint32_t nextMessagePollAt = millis() + 3000;
   uint32_t sinceMessageId = 0;
-  bool canceledOrRefunded = false;
+  bool canceledOrRefunded =
+      initialStatus != nullptr && orderIsCanceledOrRefunded(*initialStatus);
   uint32_t nextDemoStageAt = millis() + ORDER_STATUS_HOLD_MS;
+
+  if (initialStatus != nullptr) {
+    status = *initialStatus;
+  }
 
   if (demoMode) {
     status.orderStatus = "0";
@@ -801,6 +820,11 @@ void showOrderStatus(const String& orderId, bool demoMode) {
     status.customerOrderPlacedAt = "Demo order";
     hasStatus = true;
   }
+
+  // Draw the prefetched status before any network polling so there is no
+  // blank pause after the Thank You animation leaves the screen.
+  presentOrderTimeline(screen, useSprite, orderId, status, hasStatus,
+                       scrollOffset, activeStage, &notifications);
 
   while (true) {
     const uint32_t now = millis();
@@ -868,7 +892,7 @@ void showOrderStatus(const String& orderId, bool demoMode) {
       break;
     }
 
-    delay(50);
+    delay(ORDER_STATUS_FRAME_MS);
   }
 
   if (canceledOrRefunded) {
@@ -1110,8 +1134,9 @@ void runCountdownTimer(const char* priceText, bool demoMode,
       return;
     }
     startGameAssetMemoryPreload();
-    playThankYouAnimation();
-    showOrderStatus(orderId, false);
+    OrderStatus initialOrderStatus = {};
+    playThankYouAnimation(&orderId, &initialOrderStatus);
+    showOrderStatus(orderId, false, &initialOrderStatus);
     return;
   }
 

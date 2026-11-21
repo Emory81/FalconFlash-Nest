@@ -202,6 +202,12 @@ bool jsonValueIsTrue(const String& json, const char* key) {
   return json.indexOf("true", colon + 1) >= 0;
 }
 
+bool jsonFlagIsSet(const String& json, const char* key) {
+  String value = extractJsonScalar(json, key);
+  value.toLowerCase();
+  return value.length() > 0 && value != "false" && value != "0";
+}
+
 bool responseIndicatesUnarmed(const String& response) {
   String normalizedResponse = response;
   normalizedResponse.toLowerCase();
@@ -986,6 +992,24 @@ bool fetchOrderStatus(const String& orderId, OrderStatus& status) {
     status.pickedUpAt = extractJsonScalar(response, "picked_up");
   }
   status.deliveredAt = extractJsonScalar(response, "delivered_at");
+  String normalizedOrderStatus = status.orderStatus;
+  normalizedOrderStatus.toLowerCase();
+  status.canceledOrRefunded =
+      normalizedOrderStatus == "-1" ||
+      normalizedOrderStatus.indexOf("cancel") >= 0 ||
+      normalizedOrderStatus.indexOf("refund") >= 0 ||
+      jsonFlagIsSet(response, "canceled") ||
+      jsonFlagIsSet(response, "cancelled") ||
+      jsonFlagIsSet(response, "refunded") ||
+      jsonFlagIsSet(response, "order_canceled") ||
+      jsonFlagIsSet(response, "order_cancelled") ||
+      jsonFlagIsSet(response, "order_refunded") ||
+      jsonFlagIsSet(response, "canceled_at") ||
+      jsonFlagIsSet(response, "cancelled_at") ||
+      jsonFlagIsSet(response, "refunded_at") ||
+      jsonFlagIsSet(response, "order_canceled_at") ||
+      jsonFlagIsSet(response, "order_cancelled_at") ||
+      jsonFlagIsSet(response, "order_refunded_at");
   status.orderPhoto = extractJsonScalar(response, "order_photo");
 
   return status.orderStatus.length() > 0 ||
@@ -993,7 +1017,8 @@ bool fetchOrderStatus(const String& orderId, OrderStatus& status) {
          status.orderPlacedAt.length() > 0 ||
          status.customerOrderPlacedAt.length() > 0 ||
          status.pickedUpAt.length() > 0 ||
-         status.deliveredAt.length() > 0;
+         status.deliveredAt.length() > 0 ||
+         status.canceledOrRefunded;
 }
 
 DeviceMessagePollStatus fetchDeviceMessages(

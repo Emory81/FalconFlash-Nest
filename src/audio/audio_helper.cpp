@@ -40,3 +40,19 @@ void audioEnd() {
   dacWrite(AUDIO_DAC_PIN, DAC_MIN);
   digitalWrite(SPEAKER_ENABLE_PIN, HIGH);
 }
+
+void playMessageNotificationSound() {
+  if (deviceConfig().audioMuted) {
+    return;
+  }
+
+  audioBegin();
+  // A short rising three-note chirp approximates a Snapchat-style alert
+  // using the device's existing DAC tone helper.
+  audioPlayTone(1047, 55);
+  delay(20);
+  audioPlayTone(1319, 55);
+  delay(20);
+  audioPlayTone(1568, 100);
+  audioEnd();
+}

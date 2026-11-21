@@ -307,7 +307,7 @@ int postJson(const char* path, const String& body, bool useFactoryHeaders,
   return status;
 }
 
-int getJson(const String& path, String& response) {
+int getJson(const String& path, const String& bearerToken, String& response) {
   WiFiClientSecure client;
   client.setInsecure();
 
@@ -319,11 +319,18 @@ int getJson(const String& path, String& response) {
   }
   http.setTimeout(10000);
   http.addHeader("X-Firmware-Version", FIRMWARE_VERSION);
+  if (bearerToken.length() > 0) {
+    http.addHeader("Authorization", "Bearer " + bearerToken);
+  }
 
   const int status = http.GET();
   response = http.getString();
   http.end();
   return status;
+}
+
+int getJson(const String& path, String& response) {
+  return getJson(path, String(), response);
 }
 
 int firmwareVersionPart(const String& version, uint8_t partIndex) {
@@ -583,6 +590,84 @@ void saveDeviceToken(const String& token) {
   preferences.end();
 }
 
+int findJsonObjectEnd(const String& json, int objectStart) {
+  bool inString = false;
+  bool escaped = false;
+  int depth = 0;
+  for (int index = objectStart; index < json.length(); ++index) {
+    const char character = json[index];
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+      } else if (character == '\\') {
+        escaped = true;
+      } else if (character == '"') {
+        inString = false;
+      }
+      continue;
+    }
+    if (character == '"') {
+      inString = true;
+    } else if (character == '{') {
+      ++depth;
+    } else if (character == '}' && --depth == 0) {
+      return index;
+    }
+  }
+  return -1;
+}
+
+bool parseDeviceMessage(const String& object, DeviceMessage& message) {
+  const String messageId = extractJsonNumber(object, "message_id");
+  if (messageId.length() == 0) {
+    return false;
+  }
+
+  message.messageId = static_cast<uint32_t>(messageId.toInt());
+  message.buttonNumber =
+      static_cast<uint8_t>(extractJsonNumber(object, "button_number").toInt());
+  message.flyerName = extractJsonString(object, "flyer_name");
+  message.message = extractJsonString(object, "message");
+  message.createdAt = extractJsonString(object, "created_at");
+  return true;
+}
+
+uint8_t parseDeviceMessages(const String& response, DeviceMessage* messages,
+                            uint8_t maxMessages) {
+  if (messages == nullptr || maxMessages == 0) {
+    return 0;
+  }
+
+  const int messagesKey = response.indexOf("\"messages\"");
+  if (messagesKey < 0) {
+    return 0;
+  }
+  const int arrayStart = response.indexOf('[', messagesKey);
+  if (arrayStart < 0) {
+    return 0;
+  }
+
+  uint8_t count = 0;
+  int cursor = arrayStart + 1;
+  while (cursor < response.length() && count < maxMessages) {
+    const int objectStart = response.indexOf('{', cursor);
+    if (objectStart < 0) {
+      break;
+    }
+    const int objectEnd = findJsonObjectEnd(response, objectStart);
+    if (objectEnd < 0) {
+      break;
+    }
+    DeviceMessage parsed;
+    if (parseDeviceMessage(
+            response.substring(objectStart, objectEnd + 1), parsed)) {
+      messages[count++] = parsed;
+    }
+    cursor = objectEnd + 1;
+  }
+  return count;
+}
+
 String nextEventId() {
   Preferences preferences;
   preferences.begin("falcon", false);
@@ -766,11 +851,15 @@ DevicePriceStatus fetchDevicePrice(uint8_t buttonNumber, String& priceText,
   return DevicePriceStatus::Success;
 }
 
-bool submitDeviceOrder(uint8_t buttonNumber, uint8_t pickupLocationMask,
-                       String& eventId, String& orderId) {
+DeviceOrderStatus submitDeviceOrder(uint8_t buttonNumber,
+                                    uint8_t pickupLocationMask,
+                                    String& eventId, String& orderId,
+                                    String& failureDetail) {
   orderId = String();
+  failureDetail = String();
   if (buttonNumber < 1 || buttonNumber > 4) {
-    return false;
+    failureDetail = "Invalid button";
+    return DeviceOrderStatus::Unavailable;
   }
   if (WiFi.status() != WL_CONNECTED) {
     WiFi.reconnect();
@@ -781,12 +870,14 @@ bool submitDeviceOrder(uint8_t buttonNumber, uint8_t pickupLocationMask,
     }
   }
   if (WiFi.status() != WL_CONNECTED) {
-    return false;
+    failureDetail = "Wi-Fi unavailable";
+    return DeviceOrderStatus::Unavailable;
   }
 
   const String token = loadDeviceToken();
   if (token.length() == 0) {
-    return false;
+    failureDetail = "Device needs pairing";
+    return DeviceOrderStatus::NeedsPairing;
   }
 
   if (eventId.length() == 0) {
@@ -813,8 +904,24 @@ bool submitDeviceOrder(uint8_t buttonNumber, uint8_t pickupLocationMask,
   body += ",\"event_id\":\"" + eventId + "\"}";
   String response;
   const int status = postJson(ORDER_PATH, body, false, token, response);
+  String responseMessage = extractJsonString(response, "error");
+  if (responseMessage.length() == 0) {
+    responseMessage = extractJsonString(response, "message");
+  }
+  failureDetail = String("HTTP ") + status;
+  if (responseMessage.length() > 0) {
+    failureDetail += ": " + responseMessage;
+  }
+  if (responseIndicatesUnarmed(response) || status == 400 || status == 409 ||
+      status == 422) {
+    return DeviceOrderStatus::Unarmed;
+  }
+  if (status == 401 || status == 403 || status == 404) {
+    clearDeviceToken();
+    return DeviceOrderStatus::NeedsPairing;
+  }
   if (status < 200 || status >= 300) {
-    return false;
+    return DeviceOrderStatus::Unavailable;
   }
 
   // The status endpoint accepts the public order number. Prefer it when the
@@ -826,7 +933,11 @@ bool submitDeviceOrder(uint8_t buttonNumber, uint8_t pickupLocationMask,
   if (orderId.length() == 0) {
     orderId = extractJsonScalar(response, "id");
   }
-  return orderId.length() > 0;
+  if (orderId.length() == 0 && status >= 200 && status < 300) {
+    failureDetail = "Success response missing order ID";
+  }
+  return orderId.length() > 0 ? DeviceOrderStatus::Success
+                              : DeviceOrderStatus::InvalidResponse;
 }
 
 bool fetchOrderStatus(const String& orderId, OrderStatus& status) {
@@ -883,4 +994,49 @@ bool fetchOrderStatus(const String& orderId, OrderStatus& status) {
          status.customerOrderPlacedAt.length() > 0 ||
          status.pickedUpAt.length() > 0 ||
          status.deliveredAt.length() > 0;
+}
+
+DeviceMessagePollStatus fetchDeviceMessages(
+    uint8_t buttonNumber, uint32_t sinceMessageId, DeviceMessage* messages,
+    uint8_t maxMessages, uint8_t& messageCount,
+    uint32_t& nextSinceMessageId) {
+  messageCount = 0;
+  nextSinceMessageId = sinceMessageId;
+
+  const String token = loadDeviceToken();
+  if (token.length() == 0) {
+    return DeviceMessagePollStatus::NeedsPairing;
+  }
+
+  String path = "/nest/device/messages?limit=" + String(maxMessages);
+  if (buttonNumber >= 1 && buttonNumber <= 4) {
+    path += "&button_number=" + String(buttonNumber);
+  }
+  if (sinceMessageId > 0) {
+    path += "&since_message_id=" + String(sinceMessageId);
+  }
+
+  String response;
+  const int httpStatus = getJson(path, token, response);
+  if (httpStatus == 401 || httpStatus == 403) {
+    clearDeviceToken();
+    return DeviceMessagePollStatus::NeedsPairing;
+  }
+  if (httpStatus < 200 || httpStatus >= 300) {
+    return DeviceMessagePollStatus::Unavailable;
+  }
+
+  messageCount = parseDeviceMessages(response, messages, maxMessages);
+  const String nextSince =
+      extractJsonNumber(response, "next_since_message_id");
+  if (nextSince.length() > 0) {
+    nextSinceMessageId = static_cast<uint32_t>(nextSince.toInt());
+  } else {
+    for (uint8_t index = 0; index < messageCount; ++index) {
+      if (messages[index].messageId > nextSinceMessageId) {
+        nextSinceMessageId = messages[index].messageId;
+      }
+    }
+  }
+  return DeviceMessagePollStatus::Success;
 }

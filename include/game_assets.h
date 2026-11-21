@@ -68,6 +68,10 @@ void startGameAssetPrefetch();
 // current screen. This is called once the timer screen is visible.
 void startGameAssetMemoryPreload();
 
+// Finish any timer-screen asset tasks and release decoded graphics so HTTPS
+// order submission has the Wi-Fi/TLS connection and heap to itself.
+void prepareGameAssetsForOrderRequest();
+
 // Move the decoded graphics into the game menu's ownership. Returns false if
 // the background preload has not finished yet.
 bool takePreloadedGameAssets(FlappyAssets& flappy, SuperFlashyAssets& super);

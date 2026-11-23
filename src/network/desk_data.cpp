@@ -440,7 +440,20 @@ bool fetchSpotify(DeskSpotify& spotify) {
 
   const bool hasActiveTrack =
       next.isPlaying && next.track.length() > 0;
-  if (artPixels != nullptr && hasActiveTrack) {
+  const bool sameTrack = hasActiveTrack && spotify.artPixels != nullptr &&
+                         next.track == spotify.track;
+  if (sameTrack) {
+    // Keep the existing cover buffer so the UI does not re-blit every poll.
+    next.artPixels = spotify.artPixels;
+    next.artWidth = spotify.artWidth;
+    next.artHeight = spotify.artHeight;
+    spotify.artPixels = nullptr;
+    spotify.artWidth = 0;
+    spotify.artHeight = 0;
+    if (artPixels != nullptr) {
+      free(artPixels);
+    }
+  } else if (artPixels != nullptr && hasActiveTrack) {
     releaseDeskSpotifyArt(spotify);
     next.artPixels = artPixels;
     next.artWidth = artWidth;
@@ -454,9 +467,6 @@ bool fetchSpotify(DeskSpotify& spotify) {
     spotify.artPixels = nullptr;
     spotify.artWidth = 0;
     spotify.artHeight = 0;
-    if (artPixels != nullptr) {
-      free(artPixels);
-    }
   } else {
     // Nothing playing: drop the stale cover so the UI can show the logo.
     if (artPixels != nullptr) {
@@ -506,7 +516,7 @@ bool formatDeskTime(char* timeText, size_t timeSize, char* dateText,
                                    "Thu", "Fri", "Sat"};
   static const char* MONTHS[] = {"Jan", "Feb", "Mar", "Apr", "May", "Jun",
                                  "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
-  snprintf(dateText, dateSize, "%s, %s %d  EST",
+  snprintf(dateText, dateSize, "%s, %s %d",
            WEEKDAYS[localTime.tm_wday], MONTHS[localTime.tm_mon],
            localTime.tm_mday);
   return true;

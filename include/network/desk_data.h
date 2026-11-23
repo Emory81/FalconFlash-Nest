@@ -37,6 +37,22 @@ struct DeskMeals {
   String dinner;
 };
 
+struct DeskSpotify {
+  bool valid = false;
+  bool linked = false;
+  bool isPlaying = false;
+  uint32_t progressMs = 0;
+  uint32_t durationMs = 0;
+  uint32_t fetchedAt = 0;
+  String track;
+  String artists;
+  String album;
+  // Native RGB565 pixels ready for TFT_eSPI::pushImage.
+  uint16_t* artPixels = nullptr;
+  int16_t artWidth = 0;
+  int16_t artHeight = 0;
+};
+
 constexpr uint8_t DESK_STOCK_COUNT = 4;
 constexpr uint8_t DESK_HEADLINE_COUNT = 4;
 
@@ -45,14 +61,17 @@ struct DeskData {
   DeskStock stocks[DESK_STOCK_COUNT] = {
       {"SPY"}, {"AAPL"}, {"NVDA"}, {"TSLA"}};
   DeskMeals meals;
+  DeskSpotify spotify;
   String headlines[DESK_HEADLINE_COUNT];
   uint8_t headlineCount = 0;
   uint32_t weatherStocksFetchedAt = 0;
   uint32_t mealsFetchedAt = 0;
   uint32_t headlinesFetchedAt = 0;
+  uint32_t spotifyFetchedAt = 0;
 };
 
 void initDeskClock();
 bool formatDeskTime(char* timeText, size_t timeSize, char* dateText,
                     size_t dateSize);
+void releaseDeskSpotifyArt(DeskSpotify& spotify);
 void refreshDeskData(DeskData& data, bool force = false);

@@ -215,6 +215,9 @@ void ensureAssetDirectories() {
   if (!LittleFS.exists("/game_assets/super")) {
     LittleFS.mkdir("/game_assets/super");
   }
+  if (!LittleFS.exists("/game_assets/desk")) {
+    LittleFS.mkdir("/game_assets/desk");
+  }
   unlockFilesystem();
 }
 
@@ -838,4 +841,13 @@ bool loadSuperFlashyAssets(SuperFlashyAssets& assets) {
                    assets.eggOpen, entries, count);
   if (!ok) assets.release();
   return ok;
+}
+
+bool loadDeskSpotifyLogo(GameAssetImage& logo) {
+  logo.release();
+  static ManifestEntry entries[MAX_MANIFEST_ENTRIES];
+  size_t count = 0;
+  if (!loadManifestEntries(entries, count)) return false;
+  return loadOneImage("desk/spotify_logo.rgb565", "rgb565", 64, 64, logo,
+                      entries, count);
 }

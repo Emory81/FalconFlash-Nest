@@ -82,3 +82,4 @@ bool ensureGameAssets(TFT_eSPI& display);
 
 bool loadFlappyAssets(FlappyAssets& assets, bool night = false);
 bool loadSuperFlashyAssets(SuperFlashyAssets& assets);
+bool loadDeskSpotifyLogo(GameAssetImage& logo);

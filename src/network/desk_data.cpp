@@ -11,6 +11,8 @@
 
 #include "network/device_network.h"
 
+void releaseDeskSpotifyArt(DeskSpotify& spotify);
+
 namespace {
 constexpr char WEATHER_URL[] =
     "https://api.weather.gov/stations/KCXY/observations/latest";
@@ -22,11 +24,14 @@ constexpr char STOCK_URL_PREFIX[] =
 constexpr char STOCK_URL_SUFFIX[] = "?interval=1d&range=5d";
 constexpr char USER_AGENT[] =
     "FalconFlash-Nest contact@falconflash.co";
+constexpr char SPOTIFY_PATH[] = "/nest/device/spotify/now-playing";
 constexpr uint32_t WIFI_WAIT_MS = 10000;
 constexpr uint32_t WEATHER_STOCK_REFRESH_MS = 5UL * 60UL * 1000UL;
 constexpr uint32_t MEALS_REFRESH_MS = 60UL * 60UL * 1000UL;
 constexpr uint32_t HEADLINES_REFRESH_MS = 15UL * 60UL * 1000UL;
+constexpr uint32_t SPOTIFY_REFRESH_MS = 10UL * 1000UL;
 constexpr uint32_t HTTP_TIMEOUT_MS = 8000;
+constexpr size_t SPOTIFY_ART_MAX_BYTES = 64 * 64 * 2;
 bool clockStarted = false;
 
 bool refreshDue(uint32_t lastAttempt, uint32_t intervalMs, bool force) {
@@ -308,7 +313,174 @@ bool fetchHeadlines(DeskData& data) {
   }
   return true;
 }
+
+int8_t base64Value(char character) {
+  if (character >= 'A' && character <= 'Z') {
+    return character - 'A';
+  }
+  if (character >= 'a' && character <= 'z') {
+    return character - 'a' + 26;
+  }
+  if (character >= '0' && character <= '9') {
+    return character - '0' + 52;
+  }
+  if (character == '+') {
+    return 62;
+  }
+  if (character == '/') {
+    return 63;
+  }
+  return -1;
+}
+
+bool decodeBase64(const String& encoded, uint8_t*& output, size_t& outputLen) {
+  output = nullptr;
+  outputLen = 0;
+  if (encoded.length() == 0) {
+    return false;
+  }
+
+  const size_t capacity = (encoded.length() / 4) * 3 + 3;
+  if (capacity > SPOTIFY_ART_MAX_BYTES + 64) {
+    return false;
+  }
+  uint8_t* buffer = static_cast<uint8_t*>(malloc(capacity));
+  if (buffer == nullptr) {
+    return false;
+  }
+
+  size_t outIndex = 0;
+  int values[4];
+  uint8_t valueCount = 0;
+  for (uint16_t index = 0; index < encoded.length(); ++index) {
+    const char character = encoded[index];
+    if (character == '=' || isspace(character)) {
+      if (character == '=') {
+        break;
+      }
+      continue;
+    }
+    const int8_t value = base64Value(character);
+    if (value < 0) {
+      free(buffer);
+      return false;
+    }
+    values[valueCount++] = value;
+    if (valueCount == 4) {
+      buffer[outIndex++] = (values[0] << 2) | (values[1] >> 4);
+      buffer[outIndex++] = ((values[1] & 0x0F) << 4) | (values[2] >> 2);
+      buffer[outIndex++] = ((values[2] & 0x03) << 6) | values[3];
+      valueCount = 0;
+    }
+  }
+  if (valueCount == 2) {
+    buffer[outIndex++] = (values[0] << 2) | (values[1] >> 4);
+  } else if (valueCount == 3) {
+    buffer[outIndex++] = (values[0] << 2) | (values[1] >> 4);
+    buffer[outIndex++] = ((values[1] & 0x0F) << 4) | (values[2] >> 2);
+  }
+
+  output = buffer;
+  outputLen = outIndex;
+  return outIndex > 0;
+}
+
+bool jsonFlagIsTrue(const String& json, const char* key) {
+  String value = extractJsonScalar(json, key);
+  value.toLowerCase();
+  return value == "true" || value == "1";
+}
+
+bool fetchSpotify(DeskSpotify& spotify) {
+  String response;
+  if (!fetchAuthenticatedJson(SPOTIFY_PATH, response)) {
+    return false;
+  }
+
+  DeskSpotify next = spotify;
+  next.valid = true;
+  next.linked = jsonFlagIsTrue(response, "linked");
+  next.isPlaying = jsonFlagIsTrue(response, "is_playing") ||
+                   jsonFlagIsTrue(response, "playing");
+  next.progressMs = extractJsonScalar(response, "progress_ms").toInt();
+  next.durationMs = extractJsonScalar(response, "duration_ms").toInt();
+  next.track = extractJsonScalar(response, "track");
+  next.artists = extractJsonScalar(response, "artists");
+  next.album = extractJsonScalar(response, "album");
+  next.fetchedAt = millis() == 0 ? 1 : millis();
+
+  const int artStart = response.indexOf("\"album_art\"");
+  uint16_t* artPixels = nullptr;
+  int16_t artWidth = 0;
+  int16_t artHeight = 0;
+  if (artStart >= 0) {
+    String format = extractJsonScalar(response, "format", artStart);
+    format.toLowerCase();
+    artWidth = extractJsonScalar(response, "width", artStart).toInt();
+    artHeight = extractJsonScalar(response, "height", artStart).toInt();
+    const int expectedBytes = artWidth * artHeight * 2;
+    const int reportedBytes =
+        extractJsonScalar(response, "bytes", artStart).toInt();
+    const String base64 = extractJsonScalar(response, "base64", artStart);
+    uint8_t* raw = nullptr;
+    size_t rawLen = 0;
+    if (format == "rgb565" && artWidth > 0 && artHeight > 0 &&
+        artWidth <= 64 && artHeight <= 64 && expectedBytes > 0 &&
+        expectedBytes <= static_cast<int>(SPOTIFY_ART_MAX_BYTES) &&
+        (reportedBytes == 0 || reportedBytes == expectedBytes) &&
+        base64.length() > 0 && decodeBase64(base64, raw, rawLen) &&
+        rawLen >= static_cast<size_t>(expectedBytes)) {
+      artPixels = reinterpret_cast<uint16_t*>(raw);
+      // Payload endian is little-endian; ESP32 is LE so the uint16 values are
+      // already in native order for pushImage(+swapBytes).
+    } else if (raw != nullptr) {
+      free(raw);
+    }
+  }
+
+  const bool hasActiveTrack =
+      next.isPlaying && next.track.length() > 0;
+  if (artPixels != nullptr && hasActiveTrack) {
+    releaseDeskSpotifyArt(spotify);
+    next.artPixels = artPixels;
+    next.artWidth = artWidth;
+    next.artHeight = artHeight;
+  } else if (hasActiveTrack && spotify.artPixels != nullptr) {
+    // Keep the previous cover while the same session is still playing and
+    // this poll omitted art.
+    next.artPixels = spotify.artPixels;
+    next.artWidth = spotify.artWidth;
+    next.artHeight = spotify.artHeight;
+    spotify.artPixels = nullptr;
+    spotify.artWidth = 0;
+    spotify.artHeight = 0;
+    if (artPixels != nullptr) {
+      free(artPixels);
+    }
+  } else {
+    // Nothing playing: drop the stale cover so the UI can show the logo.
+    if (artPixels != nullptr) {
+      free(artPixels);
+    }
+    next.artPixels = nullptr;
+    next.artWidth = 0;
+    next.artHeight = 0;
+  }
+
+  releaseDeskSpotifyArt(spotify);
+  spotify = next;
+  return true;
+}
 }  // namespace
+
+void releaseDeskSpotifyArt(DeskSpotify& spotify) {
+  if (spotify.artPixels != nullptr) {
+    free(spotify.artPixels);
+    spotify.artPixels = nullptr;
+  }
+  spotify.artWidth = 0;
+  spotify.artHeight = 0;
+}
 
 void initDeskClock() {
   if (clockStarted || !waitForWiFi()) {
@@ -372,5 +544,10 @@ void refreshDeskData(DeskData& data, bool force) {
   if (refreshDue(data.headlinesFetchedAt, HEADLINES_REFRESH_MS, force)) {
     fetchHeadlines(data);
     data.headlinesFetchedAt = millis() == 0 ? 1 : millis();
+  }
+
+  if (refreshDue(data.spotifyFetchedAt, SPOTIFY_REFRESH_MS, force)) {
+    fetchSpotify(data.spotify);
+    data.spotifyFetchedAt = millis() == 0 ? 1 : millis();
   }
 }

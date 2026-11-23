@@ -8,12 +8,13 @@ void playBootSound() {
   audioBegin();
 
   // Short, loud four-note "ba-da-da-bum" startup fanfare.
-  audioPlayTone(659, 90);
-  delay(25);
-  audioPlayTone(784, 90);
-  delay(25);
-  audioPlayTone(988, 100);
-  delay(25);
-  audioPlayTone(1319, 240);
+  // Kept tight so wake-to-timer stays near ~3s.
+  audioPlayTone(659, 55);
+  delay(15);
+  audioPlayTone(784, 55);
+  delay(15);
+  audioPlayTone(988, 65);
+  delay(15);
+  audioPlayTone(1319, 140);
   audioEnd();
 }

@@ -1227,6 +1227,8 @@ void runCountdownTimer(const char* priceText, bool demoMode,
     // orders to be rejected, while sending the same IDs is a valid override.
     const uint8_t pickupOverrideMask = pickupLocationMask;
     drawProcessingOrder();
+    // OTA was deferred from wake so the timer could appear faster.
+    checkForFirmwareUpdate(tft, orderButtonNumber);
     prepareGameAssetsForOrderRequest();
     DeviceOrderStatus orderStatus = DeviceOrderStatus::Unavailable;
     String orderFailureDetail;
@@ -1275,11 +1277,8 @@ void setup() {
   const Button wakeButton =
       otaResumeButton == 0 ? waitForPowerButton()
                            : static_cast<Button>(otaResumeButton);
-  if (otaResumeButton != 0) {
-    // A software restart has no deep-sleep wake cause. Resume the original
-    // order button and reconnect instead of immediately sleeping again.
-    startDeviceWiFi();
-  }
+  // Kick WiFi immediately so connect overlaps splash + boot sound.
+  startDeviceWiFi();
 
   tft.init();
   tft.setRotation(DISPLAY_ROTATION);
@@ -1296,13 +1295,13 @@ void setup() {
   }
 
   if (demoMode) {
-    checkForFirmwareUpdate(tft, static_cast<uint8_t>(wakeButton));
+    // OTA is deferred off the wake path so the timer appears sooner.
     runCountdownTimer("DEMO $4.25", true, 0, 0);
     return;
   }
 
   ensureDevicePaired(tft);
-  checkForFirmwareUpdate(tft, static_cast<uint8_t>(wakeButton));
+  // Skip blocking GitHub OTA here (~1-2s). Check after the timer instead.
   String priceText;
   uint8_t savedPickupLocationMask = 0;
   const uint8_t orderButtonNumber = static_cast<uint8_t>(wakeButton);

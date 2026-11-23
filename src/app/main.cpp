@@ -1,5 +1,6 @@
 #include <Arduino.h>
 #include <TFT_eSPI.h>
+#include <WiFi.h>
 #include <esp_sleep.h>
 
 #include <cstdio>
@@ -8,6 +9,7 @@
 #include "audio/boot_sound.h"
 #include "audio/delivery_sound.h"
 #include "audio/power_down_sound.h"
+#include "app/desk_mode.h"
 #include "device_config.h"
 #include "display/display_config.h"
 #include "display/falcon_logo.h"
@@ -22,6 +24,7 @@ constexpr uint8_t BUTTON_WAKE_PIN = 35;
 constexpr int16_t LOGO_TEXT_GAP = 4;
 constexpr uint32_t DEMO_HOLD_MS = 1000;
 constexpr uint32_t COUNTDOWN_DURATION_MS = 15000;
+constexpr uint32_t TIMER_HOLD_ACTION_MS = 2000;
 constexpr int16_t TIMER_MAX_RADIUS = 52;
 constexpr int16_t TIMER_RING_THICKNESS = 6;
 constexpr int16_t TIMER_CENTER_Y = 122;
@@ -235,7 +238,7 @@ void drawCancelHint(int16_t centerX) {
   tft.setTextSize(1);
   tft.setTextColor(TFT_WHITE, TFT_BLACK);
   tft.setTextDatum(BC_DATUM);
-  tft.drawString("BTN3: change pickup", centerX,
+  tft.drawString("Hold BTN1: desk   Hold BTN3: pickup", centerX,
                  tft.height() - CANCEL_HINT_BOTTOM_MARGIN);
 }
 
@@ -400,6 +403,12 @@ Button waitForPowerButton() {
 
 void enterStandby(bool playShutdownSound) {
   if (playShutdownSound) {
+    // Early timer cancel races the game-asset download/preload tasks; those
+    // stretch delayMicroseconds() used by the DAC chime and make it distort.
+    quietGameAssetBackgroundForAudio();
+    WiFi.disconnect(true);
+    WiFi.mode(WIFI_OFF);
+    delay(20);
     playPowerDownSound();
   }
 
@@ -1124,6 +1133,8 @@ void runCountdownTimer(const char* priceText, bool demoMode,
 
   float erasedDegrees = 0.0f;
   uint8_t lastSecondsLeft = 15;
+  Button timerHoldButton = Button::None;
+  uint32_t timerHoldStartedAt = 0;
 
   while (true) {
     const uint32_t elapsedMs = millis() - startMs;
@@ -1131,36 +1142,60 @@ void runCountdownTimer(const char* priceText, bool demoMode,
       break;
     }
     const Button button = readButtonEvent();
-    if (button == Button::Button3) {
-      waitForButtonRelease();
-      const uint32_t menuStartedAt = millis();
-      pickupLocationMask = selectPickupLocations(pickupLocationMask);
-      startMs += millis() - menuStartedAt;
-
-      drawPriceHeader(centerX, priceText, pickupLocationMask,
-                      savedPickupLocationMask);
-      drawFullTimerRing(centerX, centerY);
-      const uint32_t currentElapsedMs = millis() - startMs;
-      const float currentDegrees =
-          360.0f *
-          (currentElapsedMs / static_cast<float>(COUNTDOWN_DURATION_MS));
-      eraseTimerArcSegment(centerX, centerY, 0.0f,
-                           min(currentDegrees, 360.0f));
-      erasedDegrees = min(currentDegrees, 360.0f);
-      clearTimerText(centerX, centerY);
-      const uint32_t currentRemainingMs =
-          COUNTDOWN_DURATION_MS > currentElapsedMs
-              ? COUNTDOWN_DURATION_MS - currentElapsedMs
-              : 0;
-      lastSecondsLeft =
-          static_cast<uint8_t>((currentRemainingMs + 999) / 1000);
-      drawTimerSeconds(centerX, centerY, lastSecondsLeft);
-      drawCancelHint(centerX);
-      continue;
-    }
-    if (button != Button::None) {
+    if ((button == Button::Button1 || button == Button::Button3) &&
+        timerHoldButton == Button::None) {
+      timerHoldButton = button;
+      timerHoldStartedAt = millis();
+    } else if (button != Button::None &&
+               button != Button::Button1 &&
+               button != Button::Button3) {
       waitForButtonRelease();
       enterStandby(true);
+    }
+
+    const Button heldButton = readButton();
+    if (timerHoldButton != Button::None) {
+      if (heldButton != timerHoldButton) {
+        const Button releasedButton = timerHoldButton;
+        timerHoldButton = Button::None;
+        if (releasedButton == Button::Button1 &&
+            heldButton == Button::None) {
+          enterStandby(true);
+        }
+      } else if (millis() - timerHoldStartedAt >= TIMER_HOLD_ACTION_MS) {
+        if (timerHoldButton == Button::Button1) {
+          waitForButtonRelease();
+          runDeskMode(tft);
+          enterStandby(true);
+          return;
+        }
+
+        waitForButtonRelease();
+        pickupLocationMask = selectPickupLocations(pickupLocationMask);
+        startMs += millis() - timerHoldStartedAt;
+        timerHoldButton = Button::None;
+
+        drawPriceHeader(centerX, priceText, pickupLocationMask,
+                        savedPickupLocationMask);
+        drawFullTimerRing(centerX, centerY);
+        const uint32_t currentElapsedMs = millis() - startMs;
+        const float currentDegrees =
+            360.0f *
+            (currentElapsedMs / static_cast<float>(COUNTDOWN_DURATION_MS));
+        eraseTimerArcSegment(centerX, centerY, 0.0f,
+                             min(currentDegrees, 360.0f));
+        erasedDegrees = min(currentDegrees, 360.0f);
+        clearTimerText(centerX, centerY);
+        const uint32_t currentRemainingMs =
+            COUNTDOWN_DURATION_MS > currentElapsedMs
+                ? COUNTDOWN_DURATION_MS - currentElapsedMs
+                : 0;
+        lastSecondsLeft =
+            static_cast<uint8_t>((currentRemainingMs + 999) / 1000);
+        drawTimerSeconds(centerX, centerY, lastSecondsLeft);
+        drawCancelHint(centerX);
+        continue;
+      }
     }
 
     const uint32_t remainingMs = COUNTDOWN_DURATION_MS - elapsedMs;
@@ -1192,6 +1227,8 @@ void runCountdownTimer(const char* priceText, bool demoMode,
     // orders to be rejected, while sending the same IDs is a valid override.
     const uint8_t pickupOverrideMask = pickupLocationMask;
     drawProcessingOrder();
+    // OTA was deferred from wake so the timer could appear faster.
+    checkForFirmwareUpdate(tft, orderButtonNumber);
     prepareGameAssetsForOrderRequest();
     DeviceOrderStatus orderStatus = DeviceOrderStatus::Unavailable;
     String orderFailureDetail;
@@ -1240,11 +1277,8 @@ void setup() {
   const Button wakeButton =
       otaResumeButton == 0 ? waitForPowerButton()
                            : static_cast<Button>(otaResumeButton);
-  if (otaResumeButton != 0) {
-    // A software restart has no deep-sleep wake cause. Resume the original
-    // order button and reconnect instead of immediately sleeping again.
-    startDeviceWiFi();
-  }
+  // Kick WiFi immediately so connect overlaps splash + boot sound.
+  startDeviceWiFi();
 
   tft.init();
   tft.setRotation(DISPLAY_ROTATION);
@@ -1261,13 +1295,13 @@ void setup() {
   }
 
   if (demoMode) {
-    checkForFirmwareUpdate(tft, static_cast<uint8_t>(wakeButton));
+    // OTA is deferred off the wake path so the timer appears sooner.
     runCountdownTimer("DEMO $4.25", true, 0, 0);
     return;
   }
 
   ensureDevicePaired(tft);
-  checkForFirmwareUpdate(tft, static_cast<uint8_t>(wakeButton));
+  // Skip blocking GitHub OTA here (~1-2s). Check after the timer instead.
   String priceText;
   uint8_t savedPickupLocationMask = 0;
   const uint8_t orderButtonNumber = static_cast<uint8_t>(wakeButton);

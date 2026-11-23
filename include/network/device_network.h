@@ -65,3 +65,6 @@ DeviceMessagePollStatus fetchDeviceMessages(
     uint8_t buttonNumber, uint32_t sinceMessageId, DeviceMessage* messages,
     uint8_t maxMessages, uint8_t& messageCount,
     uint32_t& nextSinceMessageId);
+
+// Authenticated Nest API GET helper for Desk Mode and similar features.
+bool fetchAuthenticatedJson(const String& path, String& response);

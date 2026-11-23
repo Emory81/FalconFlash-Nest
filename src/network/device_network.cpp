@@ -1021,6 +1021,22 @@ bool fetchOrderStatus(const String& orderId, OrderStatus& status) {
          status.canceledOrRefunded;
 }
 
+bool fetchAuthenticatedJson(const String& path, String& response) {
+  const String token = loadDeviceToken();
+  if (token.length() == 0) {
+    return false;
+  }
+  if (!connectToWiFi()) {
+    return false;
+  }
+  const int httpStatus = getJson(path, token, response);
+  if (httpStatus == 401 || httpStatus == 403) {
+    clearDeviceToken();
+    return false;
+  }
+  return httpStatus >= 200 && httpStatus < 300;
+}
+
 DeviceMessagePollStatus fetchDeviceMessages(
     uint8_t buttonNumber, uint32_t sinceMessageId, DeviceMessage* messages,
     uint8_t maxMessages, uint8_t& messageCount,

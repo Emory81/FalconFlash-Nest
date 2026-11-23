@@ -72,6 +72,10 @@ void startGameAssetMemoryPreload();
 // order submission has the Wi-Fi/TLS connection and heap to itself.
 void prepareGameAssetsForOrderRequest();
 
+// Temporarily suspend background asset tasks so bit-banged DAC audio is not
+// distorted by Wi-Fi downloads or decode work on the other core.
+void quietGameAssetBackgroundForAudio();
+
 // Move the decoded graphics into the game menu's ownership. Returns false if
 // the background preload has not finished yet.
 bool takePreloadedGameAssets(FlappyAssets& flappy, SuperFlashyAssets& super);

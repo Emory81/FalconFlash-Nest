@@ -1,5 +1,6 @@
 #include <Arduino.h>
 #include <TFT_eSPI.h>
+#include <WiFi.h>
 #include <esp_sleep.h>
 
 #include <cstdio>
@@ -402,6 +403,12 @@ Button waitForPowerButton() {
 
 void enterStandby(bool playShutdownSound) {
   if (playShutdownSound) {
+    // Early timer cancel races the game-asset download/preload tasks; those
+    // stretch delayMicroseconds() used by the DAC chime and make it distort.
+    quietGameAssetBackgroundForAudio();
+    WiFi.disconnect(true);
+    WiFi.mode(WIFI_OFF);
+    delay(20);
     playPowerDownSound();
   }
 

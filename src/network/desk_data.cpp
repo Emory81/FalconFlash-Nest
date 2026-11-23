@@ -422,18 +422,29 @@ bool fetchSpotify(DeskSpotify& spotify) {
     next.linked = true;
   }
 
-  // Treat a finished track as idle even if the API briefly lags.
-  if (next.track.length() == 0 ||
-      (next.durationMs > 0 && next.progressMs >= next.durationMs &&
-       !next.isPlaying)) {
-    next.isPlaying = false;
+  // Between-track API gaps often return an empty item for a poll or two while
+  // audio is already on the next song. Keep the previous title/art instead of
+  // flashing "Nothing playing".
+  if (next.track.length() == 0 && spotify.track.length() > 0 &&
+      (next.isPlaying || spotify.isPlaying)) {
+    next.track = spotify.track;
+    next.artists = spotify.artists;
+    next.album = spotify.album;
+    if (next.durationMs == 0) {
+      next.durationMs = spotify.durationMs;
+    }
+    if (next.progressMs == 0 && next.isPlaying) {
+      next.progressMs = spotify.progressMs;
+    }
   }
-  if (next.durationMs > 0 && next.progressMs >= next.durationMs) {
-    next.isPlaying = false;
-    next.track = "";
-    next.artists = "";
-    next.album = "";
+
+  // Only clear when the API reports idle with no track — never wipe a still-
+  // playing (or transitioning) response just because progress == duration.
+  if (next.track.length() == 0 && !next.isPlaying) {
     next.progressMs = 0;
+    next.durationMs = 0;
+  } else if (next.durationMs > 0 && next.progressMs > next.durationMs) {
+    next.progressMs = next.durationMs;
   }
 
   const bool hasTrack = next.track.length() > 0;
@@ -546,8 +557,8 @@ bool formatDeskTime(char* timeText, size_t timeSize, char* dateText,
 
 void refreshSpotifyOnly(DeskData& data) {
   if (!fetchSpotify(data.spotify)) {
-    // Keep prior state, but if the track should have ended locally, clear it
-    // so the UI does not stay stuck on a finished song.
+    // Keep title/art on a failed poll; only stop the progress bar if the
+    // previous track has locally reached its end.
     if (data.spotify.isPlaying && data.spotify.durationMs > 0) {
       uint32_t progress = data.spotify.progressMs;
       if (data.spotify.fetchedAt > 0) {
@@ -555,11 +566,9 @@ void refreshSpotifyOnly(DeskData& data) {
       }
       if (progress >= data.spotify.durationMs) {
         data.spotify.isPlaying = false;
-        data.spotify.track = "";
-        data.spotify.artists = "";
-        data.spotify.album = "";
-        data.spotify.progressMs = 0;
-        releaseDeskSpotifyArt(data.spotify);
+        data.spotify.progressMs = data.spotify.durationMs;
+        data.spotifyFetchedAt = 0;
+        return;
       }
     }
   }

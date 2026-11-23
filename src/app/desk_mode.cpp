@@ -51,8 +51,7 @@ bool spotifyEndedLocally(const DeskSpotify& spotify) {
 }
 
 bool spotifyHasTrack(const DeskSpotify& spotify) {
-  return spotify.valid && spotify.linked && spotify.track.length() > 0 &&
-         !spotifyEndedLocally(spotify);
+  return spotify.valid && spotify.linked && spotify.track.length() > 0;
 }
 
 bool spotifyHasCover(const DeskSpotify& spotify) {
@@ -60,16 +59,16 @@ bool spotifyHasCover(const DeskSpotify& spotify) {
          spotify.artWidth > 0 && spotify.artHeight > 0;
 }
 
-void clearFinishedSpotifyTrack(DeskSpotify& spotify) {
+// Local end-of-track: stop the bar, but keep title/art until the next API
+// poll confirms the next song (or true idle). Clearing here caused a random
+// "Nothing playing" flash between tracks.
+bool markFinishedSpotifyTrack(DeskSpotify& spotify) {
   if (!spotifyEndedLocally(spotify)) {
-    return;
+    return false;
   }
   spotify.isPlaying = false;
-  spotify.track = "";
-  spotify.artists = "";
-  spotify.album = "";
-  spotify.progressMs = 0;
-  releaseDeskSpotifyArt(spotify);
+  spotify.progressMs = spotify.durationMs;
+  return true;
 }
 
 void drawSpotifyProgress(TFT_eSPI& display, const DeskSpotify& spotify) {
@@ -342,15 +341,11 @@ void drawSpotifyWidget(TFT_eSPI& canvas, const DeskSpotify& spotify,
   drawWrappedText(canvas, spotify.track, textX, SPOTIFY_PANEL_Y + 24,
                   textWidth, 1, TFT_WHITE, DESK_PANEL);
   canvas.setTextColor(DESK_SUBTEXT, DESK_PANEL);
-  if (!spotify.isPlaying) {
-    canvas.drawString("Paused", textX, SPOTIFY_PANEL_Y + 40);
-  } else {
-    drawWrappedText(canvas,
-                    spotify.artists.length() > 0 ? spotify.artists
-                                                 : String("Unknown artist"),
-                    textX, SPOTIFY_PANEL_Y + 40, textWidth, 1, DESK_SUBTEXT,
-                    DESK_PANEL);
-  }
+  drawWrappedText(canvas,
+                  spotify.artists.length() > 0 ? spotify.artists
+                                               : String("Unknown artist"),
+                  textX, SPOTIFY_PANEL_Y + 40, textWidth, 1, DESK_SUBTEXT,
+                  DESK_PANEL);
 
   if (!spotify.isPlaying || spotify.durationMs == 0) {
     return;
@@ -554,8 +549,11 @@ void deskRefreshTask(void* /*param*/) {
   while (deskRefreshTaskRunning && deskRefreshData != nullptr &&
          deskDataMutex != nullptr) {
     if (xSemaphoreTake(deskDataMutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+      if (markFinishedSpotifyTrack(deskRefreshData->spotify)) {
+        // Poll ASAP for the next song instead of sitting on a blank state.
+        deskRefreshData->spotifyFetchedAt = 0;
+      }
       refreshDeskData(*deskRefreshData, false);
-      clearFinishedSpotifyTrack(deskRefreshData->spotify);
       xSemaphoreGive(deskDataMutex);
     }
     vTaskDelay(pdMS_TO_TICKS(50));
@@ -692,8 +690,10 @@ void runDeskMode(TFT_eSPI& display) {
 
     if (!backgroundRefresh) {
       // Fallback if the worker could not start.
+      if (markFinishedSpotifyTrack(data.spotify)) {
+        data.spotifyFetchedAt = 0;
+      }
       refreshDeskData(data);
-      clearFinishedSpotifyTrack(data.spotify);
     }
 
     if (!lockDeskData()) {
@@ -702,7 +702,9 @@ void runDeskMode(TFT_eSPI& display) {
       continue;
     }
 
-    clearFinishedSpotifyTrack(data.spotify);
+    if (markFinishedSpotifyTrack(data.spotify)) {
+      data.spotifyFetchedAt = 0;
+    }
     if (data.spotify.track != lastSpotifyTrack ||
         data.spotify.artists != lastSpotifyArtists ||
         data.spotify.isPlaying != lastSpotifyPlaying ||

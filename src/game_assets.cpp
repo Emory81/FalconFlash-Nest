@@ -692,6 +692,17 @@ void prepareGameAssetsForOrderRequest() {
   unlockFilesystem();
 }
 
+void quietGameAssetBackgroundForAudio() {
+  if (assetSyncTaskHandle != nullptr) {
+    vTaskSuspend(assetSyncTaskHandle);
+  }
+  if (assetMemoryPreloadTaskHandle != nullptr) {
+    vTaskSuspend(assetMemoryPreloadTaskHandle);
+  }
+  // Let any in-flight flash/WiFi work drain so DAC bit-banging stays steady.
+  delay(30);
+}
+
 bool takePreloadedGameAssets(FlappyAssets& flappy, SuperFlashyAssets& super) {
   while (assetMemoryPreloadRunning) {
     delay(10);

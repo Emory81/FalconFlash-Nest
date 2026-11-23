@@ -29,7 +29,8 @@ constexpr uint32_t WIFI_WAIT_MS = 10000;
 constexpr uint32_t WEATHER_STOCK_REFRESH_MS = 5UL * 60UL * 1000UL;
 constexpr uint32_t MEALS_REFRESH_MS = 60UL * 60UL * 1000UL;
 constexpr uint32_t HEADLINES_REFRESH_MS = 15UL * 60UL * 1000UL;
-constexpr uint32_t SPOTIFY_REFRESH_MS = 10UL * 1000UL;
+constexpr uint32_t SPOTIFY_REFRESH_MS = 8UL * 1000UL;
+constexpr uint32_t SPOTIFY_PLAYING_REFRESH_MS = 4UL * 1000UL;
 constexpr uint32_t HTTP_TIMEOUT_MS = 8000;
 constexpr size_t SPOTIFY_ART_MAX_BYTES = 64 * 64 * 2;
 bool clockStarted = false;
@@ -399,7 +400,16 @@ bool fetchSpotify(DeskSpotify& spotify) {
 
   DeskSpotify next = spotify;
   next.valid = true;
-  next.linked = jsonFlagIsTrue(response, "linked");
+  // Only trust an explicit linked value; missing/truncated JSON must not flash
+  // "Link Spotify on Nest" while a session was already linked and playing.
+  const String linkedRaw = extractJsonScalar(response, "linked");
+  if (linkedRaw.length() > 0) {
+    String linkedValue = linkedRaw;
+    linkedValue.toLowerCase();
+    next.linked = linkedValue == "true" || linkedValue == "1";
+  } else {
+    next.linked = spotify.linked;
+  }
   next.isPlaying = jsonFlagIsTrue(response, "is_playing") ||
                    jsonFlagIsTrue(response, "playing");
   next.progressMs = extractJsonScalar(response, "progress_ms").toInt();
@@ -408,59 +418,72 @@ bool fetchSpotify(DeskSpotify& spotify) {
   next.artists = extractJsonScalar(response, "artists");
   next.album = extractJsonScalar(response, "album");
   next.fetchedAt = millis() == 0 ? 1 : millis();
+  if (next.track.length() > 0 || next.isPlaying || next.album.length() > 0) {
+    next.linked = true;
+  }
 
-  const int artStart = response.indexOf("\"album_art\"");
+  // Treat a finished track as idle even if the API briefly lags.
+  if (next.track.length() == 0 ||
+      (next.durationMs > 0 && next.progressMs >= next.durationMs &&
+       !next.isPlaying)) {
+    next.isPlaying = false;
+  }
+  if (next.durationMs > 0 && next.progressMs >= next.durationMs) {
+    next.isPlaying = false;
+    next.track = "";
+    next.artists = "";
+    next.album = "";
+    next.progressMs = 0;
+  }
+
+  const bool hasTrack = next.track.length() > 0;
+  const bool sameTrack =
+      hasTrack && spotify.artPixels != nullptr && next.track == spotify.track;
+
   uint16_t* artPixels = nullptr;
   int16_t artWidth = 0;
   int16_t artHeight = 0;
-  if (artStart >= 0) {
-    String format = extractJsonScalar(response, "format", artStart);
-    format.toLowerCase();
-    artWidth = extractJsonScalar(response, "width", artStart).toInt();
-    artHeight = extractJsonScalar(response, "height", artStart).toInt();
-    const int expectedBytes = artWidth * artHeight * 2;
-    const int reportedBytes =
-        extractJsonScalar(response, "bytes", artStart).toInt();
-    const String base64 = extractJsonScalar(response, "base64", artStart);
-    uint8_t* raw = nullptr;
-    size_t rawLen = 0;
-    if (format == "rgb565" && artWidth > 0 && artHeight > 0 &&
-        artWidth <= 64 && artHeight <= 64 && expectedBytes > 0 &&
-        expectedBytes <= static_cast<int>(SPOTIFY_ART_MAX_BYTES) &&
-        (reportedBytes == 0 || reportedBytes == expectedBytes) &&
-        base64.length() > 0 && decodeBase64(base64, raw, rawLen) &&
-        rawLen >= static_cast<size_t>(expectedBytes)) {
-      artPixels = reinterpret_cast<uint16_t*>(raw);
-      // Payload endian is little-endian; ESP32 is LE so the uint16 values are
-      // already in native order for pushImage(+swapBytes).
-    } else if (raw != nullptr) {
-      free(raw);
+  // Skip expensive base64 decode when we already have this track's cover —
+  // decoding every poll can stall the UI for seconds.
+  if (hasTrack && !sameTrack) {
+    const int artStart = response.indexOf("\"album_art\"");
+    if (artStart >= 0) {
+      String format = extractJsonScalar(response, "format", artStart);
+      format.toLowerCase();
+      artWidth = extractJsonScalar(response, "width", artStart).toInt();
+      artHeight = extractJsonScalar(response, "height", artStart).toInt();
+      const int expectedBytes = artWidth * artHeight * 2;
+      const int reportedBytes =
+          extractJsonScalar(response, "bytes", artStart).toInt();
+      const String base64 = extractJsonScalar(response, "base64", artStart);
+      uint8_t* raw = nullptr;
+      size_t rawLen = 0;
+      if (format == "rgb565" && artWidth > 0 && artHeight > 0 &&
+          artWidth <= 64 && artHeight <= 64 && expectedBytes > 0 &&
+          expectedBytes <= static_cast<int>(SPOTIFY_ART_MAX_BYTES) &&
+          (reportedBytes == 0 || reportedBytes == expectedBytes) &&
+          base64.length() > 0 && decodeBase64(base64, raw, rawLen) &&
+          rawLen >= static_cast<size_t>(expectedBytes)) {
+        artPixels = reinterpret_cast<uint16_t*>(raw);
+      } else if (raw != nullptr) {
+        free(raw);
+      }
     }
   }
 
-  const bool hasActiveTrack =
-      next.isPlaying && next.track.length() > 0;
-  const bool sameTrack = hasActiveTrack && spotify.artPixels != nullptr &&
-                         next.track == spotify.track;
   if (sameTrack) {
-    // Keep the existing cover buffer so the UI does not re-blit every poll.
     next.artPixels = spotify.artPixels;
     next.artWidth = spotify.artWidth;
     next.artHeight = spotify.artHeight;
     spotify.artPixels = nullptr;
     spotify.artWidth = 0;
     spotify.artHeight = 0;
-    if (artPixels != nullptr) {
-      free(artPixels);
-    }
-  } else if (artPixels != nullptr && hasActiveTrack) {
+  } else if (artPixels != nullptr && hasTrack) {
     releaseDeskSpotifyArt(spotify);
     next.artPixels = artPixels;
     next.artWidth = artWidth;
     next.artHeight = artHeight;
-  } else if (hasActiveTrack && spotify.artPixels != nullptr) {
-    // Keep the previous cover while the same session is still playing and
-    // this poll omitted art.
+  } else if (hasTrack && spotify.artPixels != nullptr) {
     next.artPixels = spotify.artPixels;
     next.artWidth = spotify.artWidth;
     next.artHeight = spotify.artHeight;
@@ -468,7 +491,6 @@ bool fetchSpotify(DeskSpotify& spotify) {
     spotify.artWidth = 0;
     spotify.artHeight = 0;
   } else {
-    // Nothing playing: drop the stale cover so the UI can show the logo.
     if (artPixels != nullptr) {
       free(artPixels);
     }
@@ -522,42 +544,128 @@ bool formatDeskTime(char* timeText, size_t timeSize, char* dateText,
   return true;
 }
 
+void refreshSpotifyOnly(DeskData& data) {
+  if (!fetchSpotify(data.spotify)) {
+    // Keep prior state, but if the track should have ended locally, clear it
+    // so the UI does not stay stuck on a finished song.
+    if (data.spotify.isPlaying && data.spotify.durationMs > 0) {
+      uint32_t progress = data.spotify.progressMs;
+      if (data.spotify.fetchedAt > 0) {
+        progress += millis() - data.spotify.fetchedAt;
+      }
+      if (progress >= data.spotify.durationMs) {
+        data.spotify.isPlaying = false;
+        data.spotify.track = "";
+        data.spotify.artists = "";
+        data.spotify.album = "";
+        data.spotify.progressMs = 0;
+        releaseDeskSpotifyArt(data.spotify);
+      }
+    }
+  }
+  data.spotifyFetchedAt = millis() == 0 ? 1 : millis();
+}
+
+void refreshWeatherStocks(DeskData& data) {
+  DeskWeather weather = data.weather;
+  if (fetchWeather(weather)) {
+    data.weather = weather;
+  }
+  for (uint8_t index = 0; index < DESK_STOCK_COUNT; ++index) {
+    DeskStock stock = data.stocks[index];
+    if (fetchStock(stock)) {
+      data.stocks[index] = stock;
+    }
+  }
+  data.weatherStocksFetchedAt = millis() == 0 ? 1 : millis();
+}
+
+// Incremental market refresh so Desk Mode can poll buttons between requests.
+uint8_t weatherStockStep = 0;
+
+bool refreshWeatherStocksStep(DeskData& data) {
+  if (weatherStockStep == 0) {
+    DeskWeather weather = data.weather;
+    if (fetchWeather(weather)) {
+      data.weather = weather;
+    }
+    weatherStockStep = 1;
+    return true;
+  }
+  if (weatherStockStep <= DESK_STOCK_COUNT) {
+    const uint8_t index = weatherStockStep - 1;
+    DeskStock stock = data.stocks[index];
+    if (fetchStock(stock)) {
+      data.stocks[index] = stock;
+    }
+    ++weatherStockStep;
+    if (weatherStockStep > DESK_STOCK_COUNT) {
+      weatherStockStep = 0;
+      data.weatherStocksFetchedAt = millis() == 0 ? 1 : millis();
+    }
+    return true;
+  }
+  weatherStockStep = 0;
+  return false;
+}
+
 void refreshDeskData(DeskData& data, bool force) {
   if (!waitForWiFi()) {
     return;
   }
   initDeskClock();
 
-  if (refreshDue(data.weatherStocksFetchedAt, WEATHER_STOCK_REFRESH_MS,
-                 force)) {
-    DeskWeather weather = data.weather;
-    if (fetchWeather(weather)) {
-      data.weather = weather;
+  const uint32_t spotifyInterval =
+      data.spotify.isPlaying ? SPOTIFY_PLAYING_REFRESH_MS : SPOTIFY_REFRESH_MS;
+
+  if (force) {
+    weatherStockStep = 0;
+    if (refreshDue(data.weatherStocksFetchedAt, WEATHER_STOCK_REFRESH_MS,
+                   true)) {
+      refreshWeatherStocks(data);
     }
-    for (uint8_t index = 0; index < DESK_STOCK_COUNT; ++index) {
-      DeskStock stock = data.stocks[index];
-      if (fetchStock(stock)) {
-        data.stocks[index] = stock;
+    if (refreshDue(data.mealsFetchedAt, MEALS_REFRESH_MS, true)) {
+      DeskMeals meals = data.meals;
+      if (fetchMeals(meals)) {
+        data.meals = meals;
       }
+      data.mealsFetchedAt = millis() == 0 ? 1 : millis();
     }
-    data.weatherStocksFetchedAt = millis() == 0 ? 1 : millis();
+    if (refreshDue(data.headlinesFetchedAt, HEADLINES_REFRESH_MS, true)) {
+      fetchHeadlines(data);
+      data.headlinesFetchedAt = millis() == 0 ? 1 : millis();
+    }
+    if (refreshDue(data.spotifyFetchedAt, spotifyInterval, true)) {
+      refreshSpotifyOnly(data);
+    }
+    return;
   }
 
-  if (refreshDue(data.mealsFetchedAt, MEALS_REFRESH_MS, force)) {
+  // Background refresh: at most one HTTP feed per call so buttons stay
+  // responsive between Spotify / weather / stock requests.
+  if (weatherStockStep != 0) {
+    refreshWeatherStocksStep(data);
+    return;
+  }
+  if (refreshDue(data.spotifyFetchedAt, spotifyInterval, false)) {
+    refreshSpotifyOnly(data);
+    return;
+  }
+  if (refreshDue(data.weatherStocksFetchedAt, WEATHER_STOCK_REFRESH_MS,
+                 false)) {
+    refreshWeatherStocksStep(data);
+    return;
+  }
+  if (refreshDue(data.mealsFetchedAt, MEALS_REFRESH_MS, false)) {
     DeskMeals meals = data.meals;
     if (fetchMeals(meals)) {
       data.meals = meals;
     }
     data.mealsFetchedAt = millis() == 0 ? 1 : millis();
+    return;
   }
-
-  if (refreshDue(data.headlinesFetchedAt, HEADLINES_REFRESH_MS, force)) {
+  if (refreshDue(data.headlinesFetchedAt, HEADLINES_REFRESH_MS, false)) {
     fetchHeadlines(data);
     data.headlinesFetchedAt = millis() == 0 ? 1 : millis();
-  }
-
-  if (refreshDue(data.spotifyFetchedAt, SPOTIFY_REFRESH_MS, force)) {
-    fetchSpotify(data.spotify);
-    data.spotifyFetchedAt = millis() == 0 ? 1 : millis();
   }
 }

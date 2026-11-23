@@ -39,8 +39,38 @@ uint32_t spotifyProgressMs(const DeskSpotify& spotify) {
   return progressMs;
 }
 
+bool spotifyEndedLocally(const DeskSpotify& spotify) {
+  if (!spotify.isPlaying || spotify.durationMs == 0 ||
+      spotify.track.length() == 0) {
+    return false;
+  }
+  return spotifyProgressMs(spotify) >= spotify.durationMs;
+}
+
+bool spotifyHasTrack(const DeskSpotify& spotify) {
+  return spotify.valid && spotify.linked && spotify.track.length() > 0 &&
+         !spotifyEndedLocally(spotify);
+}
+
+bool spotifyHasCover(const DeskSpotify& spotify) {
+  return spotifyHasTrack(spotify) && spotify.artPixels != nullptr &&
+         spotify.artWidth > 0 && spotify.artHeight > 0;
+}
+
+void clearFinishedSpotifyTrack(DeskSpotify& spotify) {
+  if (!spotifyEndedLocally(spotify)) {
+    return;
+  }
+  spotify.isPlaying = false;
+  spotify.track = "";
+  spotify.artists = "";
+  spotify.album = "";
+  spotify.progressMs = 0;
+  releaseDeskSpotifyArt(spotify);
+}
+
 void drawSpotifyProgress(TFT_eSPI& display, const DeskSpotify& spotify) {
-  if (!spotify.valid || !spotify.linked || spotify.track.length() == 0 ||
+  if (!spotifyHasTrack(spotify) || !spotify.isPlaying ||
       spotify.durationMs == 0) {
     return;
   }
@@ -53,12 +83,6 @@ void drawSpotifyProgress(TFT_eSPI& display, const DeskSpotify& spotify) {
   if (fillW > 0) {
     display.fillRoundRect(barX, SPOTIFY_BAR_Y, fillW, 6, 3, SPOTIFY_GREEN);
   }
-}
-
-bool spotifyHasCover(const DeskSpotify& spotify) {
-  return spotify.valid && spotify.linked && spotify.isPlaying &&
-         spotify.track.length() > 0 && spotify.artPixels != nullptr &&
-         spotify.artWidth > 0 && spotify.artHeight > 0;
 }
 
 bool spotifyLogoReady(const GameAssetImage& logo) {
@@ -131,10 +155,12 @@ void drawHeader(TFT_eSPI& canvas, const char* title, uint8_t page,
                 bool showHints) {
   canvas.fillRect(0, 0, canvas.width(), canvas.height(), DESK_BG);
   canvas.setTextFont(1);
-  canvas.setTextSize(2);
-  canvas.setTextColor(TFT_WHITE, DESK_BG);
-  canvas.setTextDatum(TL_DATUM);
-  canvas.drawString(title, 12, 9);
+  if (title != nullptr && title[0] != '\0') {
+    canvas.setTextSize(2);
+    canvas.setTextColor(TFT_WHITE, DESK_BG);
+    canvas.setTextDatum(TL_DATUM);
+    canvas.drawString(title, 12, 9);
+  }
 
   for (uint8_t index = 0; index < PAGE_COUNT; ++index) {
     const int16_t x = canvas.width() - 54 + index * 12;
@@ -153,36 +179,54 @@ void drawHeader(TFT_eSPI& canvas, const char* title, uint8_t page,
 
 uint8_t drawWrappedText(TFT_eSPI& canvas, const String& text, int16_t x,
                         int16_t y, int16_t width, uint8_t maxLines,
-                        uint16_t color, uint16_t background) {
+                        uint16_t color, uint16_t background,
+                        uint8_t textSize = 1) {
   String remaining = text;
   remaining.trim();
-  const uint8_t calculatedChars = static_cast<uint8_t>(width / 6);
+  if (textSize < 1) {
+    textSize = 1;
+  }
+  const uint8_t charW = static_cast<uint8_t>(6 * textSize);
+  const uint8_t lineH = static_cast<uint8_t>(8 * textSize + 4);
+  const uint8_t calculatedChars =
+      width > 0 ? static_cast<uint8_t>(width / charW) : 8;
   const uint8_t charsPerLine =
       calculatedChars < 8 ? 8 : calculatedChars;
   canvas.setTextFont(1);
-  canvas.setTextSize(1);
+  canvas.setTextSize(textSize);
   canvas.setTextDatum(TL_DATUM);
   canvas.setTextColor(color, background);
 
   uint8_t line = 0;
   while (remaining.length() > 0 && line < maxLines) {
+    const bool lastLine = line + 1 >= maxLines;
     int splitAt = charsPerLine;
     if (remaining.length() <= charsPerLine) {
       splitAt = remaining.length();
-    } else {
+    } else if (!lastLine) {
       const int space = remaining.lastIndexOf(' ', charsPerLine);
       if (space > 0) {
         splitAt = space;
       }
+    } else {
+      // Last visible line: hard-cap so "..." stays inside the width, including
+      // mid-word truncation when there is no space to break on.
+      const int ellipsisRoom = charsPerLine > 3 ? charsPerLine - 3 : charsPerLine;
+      const int space = remaining.lastIndexOf(' ', ellipsisRoom);
+      splitAt = space > 0 ? space : ellipsisRoom;
     }
     String lineText = remaining.substring(0, splitAt);
     lineText.trim();
     remaining = remaining.substring(splitAt);
     remaining.trim();
-    if (line == maxLines - 1 && remaining.length() > 0) {
+    if (lastLine && remaining.length() > 0) {
+      while (lineText.length() + 3 > charsPerLine && lineText.length() > 0) {
+        lineText.remove(lineText.length() - 1);
+      }
+      lineText.trim();
       lineText += "...";
     }
-    canvas.drawString(lineText.c_str(), x, y + line * 12);
+    canvas.drawString(lineText.c_str(), x, y + line * lineH);
     ++line;
   }
   return line;
@@ -277,12 +321,15 @@ void drawSpotifyWidget(TFT_eSPI& canvas, const DeskSpotify& spotify,
     canvas.drawString("Spotify unavailable", textX, SPOTIFY_PANEL_Y + 34);
     return;
   }
-  if (!spotify.linked) {
+  // Prefer track state over a transient linked=false parse so a blip in the
+  // API response does not flash the link prompt over a playing song.
+  if (!spotify.linked && spotify.track.length() == 0 &&
+      spotify.artPixels == nullptr) {
     canvas.setTextColor(DESK_SUBTEXT, DESK_PANEL);
     canvas.drawString("Link Spotify on Nest", textX, SPOTIFY_PANEL_Y + 34);
     return;
   }
-  if (!spotify.isPlaying || spotify.track.length() == 0) {
+  if (!spotifyHasTrack(spotify)) {
     canvas.setTextColor(DESK_SUBTEXT, DESK_PANEL);
     canvas.drawString("Nothing playing", textX, SPOTIFY_PANEL_Y + 34);
     return;
@@ -292,22 +339,27 @@ void drawSpotifyWidget(TFT_eSPI& canvas, const DeskSpotify& spotify,
   drawWrappedText(canvas, spotify.track, textX, SPOTIFY_PANEL_Y + 24,
                   textWidth, 1, TFT_WHITE, DESK_PANEL);
   canvas.setTextColor(DESK_SUBTEXT, DESK_PANEL);
-  drawWrappedText(canvas,
-                  spotify.artists.length() > 0 ? spotify.artists
-                                               : String("Unknown artist"),
-                  textX, SPOTIFY_PANEL_Y + 40, textWidth, 1, DESK_SUBTEXT,
-                  DESK_PANEL);
+  if (!spotify.isPlaying) {
+    canvas.drawString("Paused", textX, SPOTIFY_PANEL_Y + 40);
+  } else {
+    drawWrappedText(canvas,
+                    spotify.artists.length() > 0 ? spotify.artists
+                                                 : String("Unknown artist"),
+                    textX, SPOTIFY_PANEL_Y + 40, textWidth, 1, DESK_SUBTEXT,
+                    DESK_PANEL);
+  }
 
+  if (!spotify.isPlaying || spotify.durationMs == 0) {
+    return;
+  }
   const uint32_t progressMs = spotifyProgressMs(spotify);
   const int16_t barX = textX;
   const int16_t barW = textWidth;
   canvas.fillRoundRect(barX, SPOTIFY_BAR_Y, barW, 6, 3, TFT_DARKGREY);
-  if (spotify.durationMs > 0) {
-    const int16_t fillW = static_cast<int16_t>(
-        (static_cast<uint32_t>(barW) * progressMs) / spotify.durationMs);
-    if (fillW > 0) {
-      canvas.fillRoundRect(barX, SPOTIFY_BAR_Y, fillW, 6, 3, SPOTIFY_GREEN);
-    }
+  const int16_t fillW = static_cast<int16_t>(
+      (static_cast<uint32_t>(barW) * progressMs) / spotify.durationMs);
+  if (fillW > 0) {
+    canvas.fillRoundRect(barX, SPOTIFY_BAR_Y, fillW, 6, 3, SPOTIFY_GREEN);
   }
 }
 
@@ -332,27 +384,30 @@ void drawTimeBlock(TFT_eSPI& canvas, const char* timeText, const char* dateText,
 void drawWeatherBlock(TFT_eSPI& canvas, const DeskWeather& weather, uint16_t bg,
                       uint16_t fg, uint16_t sub) {
   canvas.fillRect(0, 80, canvas.width(), SPOTIFY_PANEL_Y - 80, bg);
-  drawWeatherIcon(canvas, weather.icon, 48, 98);
+  const int16_t centerX = canvas.width() / 2;
+  drawWeatherIcon(canvas, weather.icon, centerX - 48, 98);
   canvas.setTextDatum(ML_DATUM);
   if (weather.valid) {
     char temperature[16];
     snprintf(temperature, sizeof(temperature), "%d F", weather.temperatureF);
     canvas.setTextSize(2);
     canvas.setTextColor(fg, bg);
-    canvas.drawString(temperature, 78, 90);
+    canvas.drawString(temperature, centerX - 18, 90);
     canvas.setTextSize(1);
     canvas.setTextColor(sub, bg);
-    drawWrappedText(canvas, weather.condition, 78, 108, 220, 1, sub, bg);
+    drawWrappedText(canvas, weather.condition, centerX - 18, 108, 150, 1, sub,
+                    bg);
   } else {
     canvas.setTextSize(1);
     canvas.setTextColor(sub, bg);
-    canvas.drawString("Weather unavailable", 78, 98);
+    canvas.setTextDatum(MC_DATUM);
+    canvas.drawString("Weather unavailable", centerX, 98);
   }
 }
 
 void drawClockWeather(TFT_eSPI& canvas, const DeskData& data, bool showHints,
                       const GameAssetImage& spotifyLogo) {
-  drawHeader(canvas, "Desk Mode", 0, showHints);
+  drawHeader(canvas, "", 0, showHints);
   char timeText[16] = "--:--";
   char dateText[24] = "Syncing time...";
   formatDeskTime(timeText, sizeof(timeText), dateText, sizeof(dateText));
@@ -406,16 +461,10 @@ void drawMeals(TFT_eSPI& canvas, const DeskData& data, bool showHints) {
     return;
   }
 
-  canvas.setTextDatum(TC_DATUM);
-  canvas.setTextSize(1);
-  canvas.setTextColor(DESK_SUBTEXT, DESK_BG);
-  canvas.drawString(data.meals.day.c_str(), canvas.width() / 2, 35);
-
   String day = data.meals.day;
   day.toLowerCase();
   const bool weekend = day.indexOf("saturday") >= 0 ||
                        day.indexOf("sunday") >= 0;
-  const uint8_t mealCount = weekend ? 2 : 3;
   const char* labels[] = {"Breakfast", "Lunch", "Dinner"};
   const String meals[] = {data.meals.breakfast, data.meals.lunch,
                           data.meals.dinner};
@@ -423,18 +472,18 @@ void drawMeals(TFT_eSPI& canvas, const DeskData& data, bool showHints) {
   const int16_t cardGap = weekend ? 10 : 5;
   for (uint8_t index = weekend ? 1 : 0; index < 3; ++index) {
     const uint8_t cardIndex = weekend ? index - 1 : index;
-    const int16_t y = 48 + cardIndex * (cardHeight + cardGap);
+    const int16_t y = 36 + cardIndex * (cardHeight + cardGap);
     canvas.fillRoundRect(12, y, canvas.width() - 24, cardHeight, 8,
                          DESK_PANEL);
     canvas.setTextDatum(TL_DATUM);
     canvas.setTextSize(1);
     canvas.setTextColor(DESK_ACCENT, DESK_PANEL);
     canvas.drawString(labels[index], 22, y + 8);
+    // One step up from the original size-1 body text.
     drawWrappedText(canvas,
                     meals[index].length() > 0 ? meals[index] : "Not listed",
-                    22, y + 26, canvas.width() - 44, weekend ? 2 : 1,
-                    TFT_WHITE,
-                    DESK_PANEL);
+                    22, y + 24, canvas.width() - 44, weekend ? 2 : 1, TFT_WHITE,
+                    DESK_PANEL, 2);
   }
 }
 
@@ -567,6 +616,7 @@ void runDeskMode(TFT_eSPI& display) {
     }
 
     refreshDeskData(data);
+    clearFinishedSpotifyTrack(data.spotify);
     if (data.spotify.track != lastSpotifyTrack ||
         data.spotify.artists != lastSpotifyArtists ||
         data.spotify.isPlaying != lastSpotifyPlaying ||

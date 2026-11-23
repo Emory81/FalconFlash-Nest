@@ -311,35 +311,41 @@ void drawSpotifyWidget(TFT_eSPI& canvas, const DeskSpotify& spotify,
   }
 }
 
-void drawTimeBlock(TFT_eSPI& canvas, const char* timeText,
-                   const char* dateText) {
-  canvas.fillRect(0, 28, canvas.width(), 52, DESK_BG);
+// Match colors as seen after an 8-bit sprite push, so direct display patches
+// do not flash a different background shade.
+uint16_t spriteScreenColor(TFT_eSPI& display, uint16_t color) {
+  return display.color8to16(display.color16to8(color));
+}
+
+void drawTimeBlock(TFT_eSPI& canvas, const char* timeText, const char* dateText,
+                   uint16_t bg, uint16_t fg, uint16_t sub) {
+  canvas.fillRect(0, 28, canvas.width(), 52, bg);
   canvas.setTextDatum(MC_DATUM);
   canvas.setTextSize(3);
-  canvas.setTextColor(TFT_WHITE, DESK_BG);
+  canvas.setTextColor(fg, bg);
   canvas.drawString(timeText, canvas.width() / 2, 42);
   canvas.setTextSize(1);
-  canvas.setTextColor(DESK_SUBTEXT, DESK_BG);
+  canvas.setTextColor(sub, bg);
   canvas.drawString(dateText, canvas.width() / 2, 68);
 }
 
-void drawWeatherBlock(TFT_eSPI& canvas, const DeskWeather& weather) {
-  canvas.fillRect(0, 80, canvas.width(), SPOTIFY_PANEL_Y - 80, DESK_BG);
+void drawWeatherBlock(TFT_eSPI& canvas, const DeskWeather& weather, uint16_t bg,
+                      uint16_t fg, uint16_t sub) {
+  canvas.fillRect(0, 80, canvas.width(), SPOTIFY_PANEL_Y - 80, bg);
   drawWeatherIcon(canvas, weather.icon, 48, 98);
   canvas.setTextDatum(ML_DATUM);
   if (weather.valid) {
     char temperature[16];
     snprintf(temperature, sizeof(temperature), "%d F", weather.temperatureF);
     canvas.setTextSize(2);
-    canvas.setTextColor(TFT_WHITE, DESK_BG);
+    canvas.setTextColor(fg, bg);
     canvas.drawString(temperature, 78, 90);
     canvas.setTextSize(1);
-    canvas.setTextColor(DESK_SUBTEXT, DESK_BG);
-    drawWrappedText(canvas, weather.condition, 78, 108, 220, 1, DESK_SUBTEXT,
-                    DESK_BG);
+    canvas.setTextColor(sub, bg);
+    drawWrappedText(canvas, weather.condition, 78, 108, 220, 1, sub, bg);
   } else {
     canvas.setTextSize(1);
-    canvas.setTextColor(DESK_SUBTEXT, DESK_BG);
+    canvas.setTextColor(sub, bg);
     canvas.drawString("Weather unavailable", 78, 98);
   }
 }
@@ -350,8 +356,8 @@ void drawClockWeather(TFT_eSPI& canvas, const DeskData& data, bool showHints,
   char timeText[16] = "--:--";
   char dateText[24] = "Syncing time...";
   formatDeskTime(timeText, sizeof(timeText), dateText, sizeof(dateText));
-  drawTimeBlock(canvas, timeText, dateText);
-  drawWeatherBlock(canvas, data.weather);
+  drawTimeBlock(canvas, timeText, dateText, DESK_BG, TFT_WHITE, DESK_SUBTEXT);
+  drawWeatherBlock(canvas, data.weather, DESK_BG, TFT_WHITE, DESK_SUBTEXT);
   drawSpotifyWidget(canvas, data.spotify, spotifyLogo);
 }
 
@@ -609,9 +615,16 @@ void runDeskMode(TFT_eSPI& display) {
         char timeText[16] = "--:--";
         char dateText[24] = "Syncing time...";
         formatDeskTime(timeText, sizeof(timeText), dateText, sizeof(dateText));
+        const uint16_t patchBg =
+            useSprite ? spriteScreenColor(display, DESK_BG) : DESK_BG;
+        const uint16_t patchFg =
+            useSprite ? spriteScreenColor(display, TFT_WHITE) : TFT_WHITE;
+        const uint16_t patchSub =
+            useSprite ? spriteScreenColor(display, DESK_SUBTEXT) : DESK_SUBTEXT;
         if (strcmp(timeText, lastTimeText) != 0 ||
             strcmp(dateText, lastDateText) != 0) {
-          drawTimeBlock(display, timeText, dateText);
+          drawTimeBlock(display, timeText, dateText, patchBg, patchFg,
+                        patchSub);
           strncpy(lastTimeText, timeText, sizeof(lastTimeText) - 1);
           lastTimeText[sizeof(lastTimeText) - 1] = '\0';
           strncpy(lastDateText, dateText, sizeof(lastDateText) - 1);
@@ -621,7 +634,7 @@ void runDeskMode(TFT_eSPI& display) {
             data.weather.temperatureF != lastWeatherTemp ||
             data.weather.icon != lastWeatherIcon ||
             data.weather.condition != lastWeatherCondition) {
-          drawWeatherBlock(display, data.weather);
+          drawWeatherBlock(display, data.weather, patchBg, patchFg, patchSub);
           lastWeatherValid = data.weather.valid;
           lastWeatherTemp = data.weather.temperatureF;
           lastWeatherIcon = data.weather.icon;

@@ -52,17 +52,6 @@ void drawSpotifyProgress(TFT_eSPI& display, const DeskSpotify& spotify) {
   }
 }
 
-void drawSpotifyLogoFallback(TFT_eSPI& canvas) {
-  const int16_t centerX = SPOTIFY_ART_X + SPOTIFY_ART_SIZE / 2;
-  const int16_t centerY = SPOTIFY_ART_Y + SPOTIFY_ART_SIZE / 2;
-  canvas.fillRoundRect(SPOTIFY_ART_X, SPOTIFY_ART_Y, SPOTIFY_ART_SIZE,
-                       SPOTIFY_ART_SIZE, 8, SPOTIFY_GREEN);
-  for (int16_t radius = 10; radius <= 18; radius += 4) {
-    canvas.drawArc(centerX, centerY + 2, radius, radius - 2, 210, 330,
-                   TFT_BLACK, SPOTIFY_GREEN, true);
-  }
-}
-
 bool spotifyHasCover(const DeskSpotify& spotify) {
   return spotify.valid && spotify.linked && spotify.isPlaying &&
          spotify.track.length() > 0 && spotify.artPixels != nullptr &&
@@ -240,7 +229,8 @@ void drawSpotifyWidget(TFT_eSPI& canvas, const DeskSpotify& spotify,
     canvas.fillRect(SPOTIFY_ART_X, SPOTIFY_ART_Y, SPOTIFY_ART_SIZE,
                     SPOTIFY_ART_SIZE, SPOTIFY_GREEN);
   } else {
-    drawSpotifyLogoFallback(canvas);
+    canvas.fillRect(SPOTIFY_ART_X, SPOTIFY_ART_Y, SPOTIFY_ART_SIZE,
+                    SPOTIFY_ART_SIZE, DESK_PANEL);
   }
 
   if (!spotify.valid) {

@@ -15,7 +15,6 @@ constexpr uint16_t DESK_ACCENT = 0x4D9F;
 constexpr uint16_t DESK_SUBTEXT = 0xBDF7;
 constexpr uint16_t SPOTIFY_GREEN = 0x1DCA;  // #1DB954
 constexpr uint16_t SPOTIFY_LOGO_TRANSPARENT = 0xF81F;
-constexpr int16_t SPOTIFY_LOGO_RADIUS = 12;
 constexpr uint32_t PAGE_ROTATE_MS = 8000;
 constexpr uint16_t FRAME_MS = 100;
 constexpr uint8_t PAGE_COUNT = 4;
@@ -84,9 +83,7 @@ void pushSpotifyArtSlot(TFT_eSPI& display, const DeskSpotify& spotify,
     return;
   }
 
-  // Rounded green tile, then white glyph with magenta transparency.
-  display.fillRoundRect(SPOTIFY_ART_X, SPOTIFY_ART_Y, SPOTIFY_ART_SIZE,
-                        SPOTIFY_ART_SIZE, SPOTIFY_LOGO_RADIUS, SPOTIFY_GREEN);
+  // Full logo tile with magenta-keyed rounded corners.
   const int16_t drawX =
       SPOTIFY_ART_X + (SPOTIFY_ART_SIZE - static_cast<int16_t>(logo.width)) / 2;
   const int16_t drawY =
@@ -235,9 +232,9 @@ void drawSpotifyWidget(TFT_eSPI& canvas, const DeskSpotify& spotify,
     canvas.fillRect(SPOTIFY_ART_X, SPOTIFY_ART_Y, SPOTIFY_ART_SIZE,
                     SPOTIFY_ART_SIZE, DESK_PANEL);
   } else if (spotifyLogoReady(logo)) {
-    // Rounded green placeholder; white logo is blitted after the 8-bit sprite.
-    canvas.fillRoundRect(SPOTIFY_ART_X, SPOTIFY_ART_Y, SPOTIFY_ART_SIZE,
-                         SPOTIFY_ART_SIZE, SPOTIFY_LOGO_RADIUS, SPOTIFY_GREEN);
+    // Panel placeholder; full logo RGB565 is blitted after the 8-bit sprite.
+    canvas.fillRect(SPOTIFY_ART_X, SPOTIFY_ART_Y, SPOTIFY_ART_SIZE,
+                    SPOTIFY_ART_SIZE, DESK_PANEL);
   } else {
     canvas.fillRect(SPOTIFY_ART_X, SPOTIFY_ART_Y, SPOTIFY_ART_SIZE,
                     SPOTIFY_ART_SIZE, DESK_PANEL);

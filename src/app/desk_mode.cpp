@@ -1,6 +1,9 @@
 #include "app/desk_mode.h"
 
 #include <Arduino.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/semphr.h>
+#include <freertos/task.h>
 
 #include <cstdio>
 #include <cstring>
@@ -540,6 +543,75 @@ void drawLoading(TFT_eSPI& display) {
   display.drawString("Getting weather, markets and news",
                      display.width() / 2, display.height() / 2 + 18);
 }
+
+// Network refresh runs on a worker so the UI loop can always poll buttons.
+DeskData* deskRefreshData = nullptr;
+SemaphoreHandle_t deskDataMutex = nullptr;
+TaskHandle_t deskRefreshTaskHandle = nullptr;
+volatile bool deskRefreshTaskRunning = false;
+
+void deskRefreshTask(void* /*param*/) {
+  while (deskRefreshTaskRunning && deskRefreshData != nullptr &&
+         deskDataMutex != nullptr) {
+    if (xSemaphoreTake(deskDataMutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+      refreshDeskData(*deskRefreshData, false);
+      clearFinishedSpotifyTrack(deskRefreshData->spotify);
+      xSemaphoreGive(deskDataMutex);
+    }
+    vTaskDelay(pdMS_TO_TICKS(50));
+  }
+  deskRefreshTaskHandle = nullptr;
+  vTaskDelete(nullptr);
+}
+
+bool startDeskRefreshTask(DeskData& data) {
+  if (deskRefreshTaskRunning) {
+    return true;
+  }
+  if (deskDataMutex == nullptr) {
+    deskDataMutex = xSemaphoreCreateMutex();
+  }
+  if (deskDataMutex == nullptr) {
+    return false;
+  }
+  deskRefreshData = &data;
+  deskRefreshTaskRunning = true;
+  const BaseType_t created = xTaskCreatePinnedToCore(
+      deskRefreshTask, "desk_refresh", 12288, nullptr, 1,
+      &deskRefreshTaskHandle, 0);
+  if (created != pdPASS) {
+    deskRefreshTaskHandle = nullptr;
+    deskRefreshTaskRunning = false;
+    deskRefreshData = nullptr;
+    return false;
+  }
+  return true;
+}
+
+void stopDeskRefreshTask() {
+  deskRefreshTaskRunning = false;
+  uint32_t waited = 0;
+  while (deskRefreshTaskHandle != nullptr && waited < 3000) {
+    delay(20);
+    waited += 20;
+  }
+  if (deskRefreshTaskHandle != nullptr) {
+    vTaskDelete(deskRefreshTaskHandle);
+    deskRefreshTaskHandle = nullptr;
+  }
+  deskRefreshData = nullptr;
+}
+
+bool lockDeskData(TickType_t ticks = pdMS_TO_TICKS(50)) {
+  return deskDataMutex == nullptr ||
+         xSemaphoreTake(deskDataMutex, ticks) == pdTRUE;
+}
+
+void unlockDeskData() {
+  if (deskDataMutex != nullptr) {
+    xSemaphoreGive(deskDataMutex);
+  }
+}
 }  // namespace
 
 void runDeskMode(TFT_eSPI& display) {
@@ -553,6 +625,7 @@ void runDeskMode(TFT_eSPI& display) {
   DeskData data;
   initDeskClock();
   refreshDeskData(data, true);
+  const bool backgroundRefresh = startDeskRefreshTask(data);
 
   TFT_eSprite frame(&display);
   frame.setColorDepth(8);
@@ -580,6 +653,7 @@ void runDeskMode(TFT_eSPI& display) {
   String lastWeatherCondition;
 
   while (true) {
+    // Always poll buttons first — never blocked by HTTP on this task.
     const Button button = readButtonEvent();
     if (button != Button::None) {
       lastInteractionAt = millis();
@@ -591,6 +665,7 @@ void runDeskMode(TFT_eSPI& display) {
     }
     if (button == Button::Button4) {
       waitForButtonRelease();
+      stopDeskRefreshTask();
       frame.deleteSprite();
       spotifyLogo.release();
       releaseDeskSpotifyArt(data.spotify);
@@ -615,7 +690,18 @@ void runDeskMode(TFT_eSPI& display) {
       spotifyArtDirty = true;
     }
 
-    refreshDeskData(data);
+    if (!backgroundRefresh) {
+      // Fallback if the worker could not start.
+      refreshDeskData(data);
+      clearFinishedSpotifyTrack(data.spotify);
+    }
+
+    if (!lockDeskData()) {
+      // Worker is mid-refresh; keep polling buttons and try drawing next loop.
+      delay(10);
+      continue;
+    }
+
     clearFinishedSpotifyTrack(data.spotify);
     if (data.spotify.track != lastSpotifyTrack ||
         data.spotify.artists != lastSpotifyArtists ||
@@ -699,6 +785,7 @@ void runDeskMode(TFT_eSPI& display) {
       }
       nextFrameAt = millis() + FRAME_MS;
     }
+    unlockDeskData();
     delay(10);
   }
 }

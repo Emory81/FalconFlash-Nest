@@ -27,16 +27,18 @@ are padded with air, so you don't need trailing dots.
 | `X` | ground |
 | `H` | background hill (decoration, not solid) |
 | `S` | player start (exactly one) |
-| `N` | the nest, the goal (exactly one) |
+| `N` | a nest, the goal (at least one; reaching any of them finishes the level) |
 | `G` | gorilla (patrols back and forth) |
-| `R` | red gorilla (chases you) |
+| `g` | red gorilla (chases you) |
+| `O` | golden egg (collectible; hangs exactly where you draw it) |
+| `R` `L` `U` `D` | direction block: you can only pass through it moving right, left, up or down |
 | `F` | fox |
 | `B` | box (breaks when bumped from below) |
 | `M` | mystery box (hatches an egg: powerup, or sometimes a rat) |
 
 ```
 ...BMB..........
-..S...XXX.R...GN
+..S...XXX.g...GN
 XXXXXXXXXXXX..XX
 ```
 
@@ -52,19 +54,21 @@ XXXXXXXXXXXX..XX
 - **Boxes:** a box fills exactly one cell. The bird is 2 tiles tall, so a box in
   the row 3 above the ground (two empty rows under it) can be walked under and
   bumped by jumping. Directly above the ground it is a crate you walk into.
+- **Direction blocks:** every side is solid except the way in that matches the
+  arrow (`U` is a platform you can jump up through). Enemies cannot pass them.
 - **Hill:** you only need to mark the top of the hill in each column. Every
   cell below it (above the ground) is filled in.
-- **Height:** up to 20 rows. The screen shows 15 rows, so taller maps scroll up
+- **Height:** up to 32 rows. The screen shows 15 rows, so taller maps scroll up
   and down to follow the bird; shorter ones sit at the bottom.
 
 ## What the player can do
 
-- Jump about 4 tiles high; a 4-tile step is tight. Use ledges for anything
+- Jump about 5 tiles high; a 5-tile step is tight. Use ledges for anything
   taller (the checker warns about walls taller than 4 with no ledge near them).
 - Clear a pit of about 4 tiles with a normal jump, and up to about 7 tiles with
   a running jump (double-tap left or right and keep holding). Wider pits get a
   warning.
-- Stand on the nest to finish the level.
+- Stand on a nest to finish the level.
 
 ## Limits
 

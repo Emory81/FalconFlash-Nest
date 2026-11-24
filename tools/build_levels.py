@@ -16,7 +16,7 @@ LEVELS_DIR = ROOT / "levels"
 OUT = ROOT / "include" / "super_flashy_levels.h"
 
 TILE = 16       # px per map cell (must match TILE in super_flashy_birds.cpp)
-MAX_ROWS = 20   # tallest map allowed (the screen scrolls vertically)
+MAX_ROWS = 32   # tallest map allowed (the screen scrolls vertically)
 
 SYMBOLS = {
     ".": "air",
@@ -26,12 +26,18 @@ SYMBOLS = {
     "S": "player start",
     "N": "nest (goal)",
     "G": "gorilla",
-    "R": "red gorilla",
+    "g": "red gorilla",
+    "O": "golden egg (collectible)",
+    "R": "direction block, passable moving right",
+    "L": "direction block, passable moving left",
+    "U": "direction block, passable moving up",
+    "D": "direction block, passable moving down",
     "F": "fox",
     "B": "box",
     "M": "mystery box",
 }
 
+ARROWS = "RLUD"      # order of the masks in Level::arrows
 MAX_PIT = 7          # tiles a running jump clears
 
 
@@ -71,17 +77,24 @@ def parse(path: Path):
     def cell(col, row):  # row 0 is the bottom row of the map
         return grid[rows - 1 - row][col]
 
-    solid, decor = [], []
+    solid, decor, arrows = [], [], []
     for col in range(width):
+        a_masks = [0] * len(ARROWS)
         s_mask = d_mask = 0
         for row in range(rows):
             ch = cell(col, row)
             if ch == "X":
                 s_mask |= 1 << row
-            elif ch == "H":
-                d_mask |= 1 << row
+            elif ch in ARROWS:  # solid, apart from the one way through
+                s_mask |= 1 << row
+                a_masks[ARROWS.index(ch)] |= 1 << row
+            elif ch == "H" or (ch == "O" and 0 < col < width - 1
+                               and cell(col - 1, row) == "H"
+                               and cell(col + 1, row) == "H"):
+                d_mask |= 1 << row  # an egg inside a hill keeps the dirt behind
         solid.append(s_mask)
         decor.append(d_mask)
+        arrows.append(tuple(a_masks))
 
     def is_solid(col, row):
         return row >= 0 and (solid[col] >> row) & 1
@@ -95,7 +108,7 @@ def parse(path: Path):
             raise LevelError(f"{what} at column {col + 1} has no ground underneath")
         return row
 
-    starts, nests, gorillas, foxes, boxes = [], [], [], [], []
+    starts, nests, gorillas, foxes, boxes, golds = [], [], [], [], [], []
     for col in range(width):
         for row in range(rows):
             ch = cell(col, row)
@@ -103,18 +116,20 @@ def parse(path: Path):
                 starts.append((col, stand_row("S (start)", col, row)))
             elif ch == "N":
                 nests.append((col, stand_row("N (nest)", col, row)))
-            elif ch in "GR":
-                gorillas.append((col, stand_row("G/R (gorilla)", col, row),
-                                 1 if ch == "R" else 0))
+            elif ch in ("G", "g"):
+                gorillas.append((col, stand_row("G/g (gorilla)", col, row),
+                                 1 if ch == "g" else 0))
             elif ch == "F":
                 foxes.append((col, stand_row("F (fox)", col, row)))
-            elif ch in "BM":
+            elif ch == "O":
+                golds.append((col, row))  # stays where it is drawn
+            elif ch in ("B", "M"):
                 boxes.append((col * TILE, row * TILE, 1 if ch == "M" else 0))
 
     if len(starts) != 1:
         raise LevelError(f"needs exactly one S (player start), found {len(starts)}")
-    if len(nests) != 1:
-        raise LevelError(f"needs exactly one N (nest), found {len(nests)}")
+    if not nests:
+        raise LevelError("needs at least one N (nest)")
 
     warnings = []
     col = 0
@@ -133,8 +148,8 @@ def parse(path: Path):
 
     return {
         "width": width, "rows": rows, "solid": solid, "decor": decor,
-        "start": starts[0], "nest": nests[0], "gorillas": gorillas,
-        "foxes": foxes, "boxes": boxes,
+        "start": starts[0], "nests": nests, "gorillas": gorillas,
+        "foxes": foxes, "boxes": boxes, "golds": golds, "arrows": arrows,
     }, warnings
 
 
@@ -153,6 +168,8 @@ def emit(levels):
     max_g = max([len(lv["gorillas"]) for _, lv in levels] + [1])
     max_b = max([len(lv["boxes"]) for _, lv in levels] + [1])
     max_f = max([len(lv["foxes"]) for _, lv in levels] + [1])
+    max_o = max([len(lv["golds"]) for _, lv in levels] + [1])
+    max_n = max(len(lv["nests"]) for _, lv in levels)
     max_rows = max(lv["rows"] for _, lv in levels)
     lines = [
         "#pragma once",
@@ -171,16 +188,21 @@ def emit(levels):
         "  uint8_t boxCount;",
         "  const int16_t (*foxes)[2];        // {column, row}",
         "  uint8_t foxCount;",
-        "  int16_t nestCol;",
-        "  int16_t nestRow;",
+        "  const int16_t (*nests)[2];        // {column, row}; any one is the goal",
+        "  uint8_t nestCount;",
         "  int16_t startCol;",
         "  int16_t startRow;",
+        "  const uint32_t (*arrows)[4];      // per column: direction blocks R, L, U, D",
+        "  const int16_t (*golds)[2];        // golden eggs {column, row}",
+        "  uint8_t goldCount;",
         "};",
         "",
         f"constexpr uint8_t LEVEL_MAX_GORILLAS = {max_g};",
         f"constexpr uint8_t LEVEL_MAX_BOXES = {max_b};",
         f"constexpr uint8_t LEVEL_MAX_FOXES = {max_f};",
         f"constexpr int16_t LEVEL_MAX_ROWS = {max_rows};",
+        f"constexpr uint8_t LEVEL_MAX_NESTS = {max_n};",
+        f"constexpr uint8_t LEVEL_MAX_GOLDS = {max_o};",
         "",
     ]
     entries = []
@@ -193,12 +215,17 @@ def emit(levels):
         lines.append(f"constexpr int16_t {p}_GORILLAS[][3] = {{{pairs(lv['gorillas'] or [(0, 0, 0)])}}};")
         lines.append(f"constexpr int16_t {p}_BOXES[][3] = {{{pairs(lv['boxes'] or [(0, 0, 0)])}}};")
         lines.append(f"constexpr int16_t {p}_FOXES[][2] = {{{pairs(lv['foxes'] or [(0, 0)])}}};")
+        lines.append(f"constexpr int16_t {p}_NESTS[][2] = {{{pairs(lv['nests'])}}};")
+        masks = ["{" + ", ".join(hexu(m) for m in a) + "}" for a in lv["arrows"]]
+        lines.append(f"constexpr uint32_t {p}_ARROWS[][4] = {{\n{c_array(masks, per_line=4)}\n}};")
+        lines.append(f"constexpr int16_t {p}_GOLDS[][2] = {{{pairs(lv['golds'] or [(0, 0)])}}};")
         lines.append("")
         entries.append(
             f"    {{{lv['width']}, {lv['rows']}, {p}_SOLID, {p}_DECOR, {p}_GORILLAS, "
             f"{len(lv['gorillas'])}, {p}_BOXES, {len(lv['boxes'])}, {p}_FOXES, "
-            f"{len(lv['foxes'])}, {lv['nest'][0]}, {lv['nest'][1]}, "
-            f"{lv['start'][0]}, {lv['start'][1]}}}")
+            f"{len(lv['foxes'])}, {p}_NESTS, {len(lv['nests'])}, "
+            f"{lv['start'][0]}, {lv['start'][1]}, {p}_ARROWS, {p}_GOLDS, "
+            f"{len(lv['golds'])}}}")
     lines.append("const Level LEVELS[] = {")
     lines.append(",\n".join(entries))
     lines.append("};")
@@ -228,7 +255,7 @@ def main(argv=None):
         if not quiet:
             print(f"{f.name}: {lv['width']}x{lv['rows']} tiles, "
                   f"{len(lv['gorillas'])} gorillas, {len(lv['foxes'])} foxes, "
-                  f"{len(lv['boxes'])} boxes")
+                  f"{len(lv['boxes'])} boxes, {len(lv['golds'])} golden eggs")
     if failed:
         return 1
     text = emit(levels)

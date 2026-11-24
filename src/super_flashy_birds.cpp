@@ -42,7 +42,8 @@ constexpr int16_t MAX_ROWS = LEVEL_MAX_ROWS;  // tallest level, in tiles
 static_assert(TILE == 16, "levels/*.txt maps assume 16 px tiles");
 constexpr uint8_t MAX_GORILLAS = LEVEL_MAX_GORILLAS;
 constexpr uint8_t BOX_MAX = LEVEL_MAX_BOXES;
-constexpr uint8_t BOX_SLOTS = BOX_MAX + 1;  // the last slot holds the nest
+// The slots after the boxes hold the nests.
+constexpr uint8_t BOX_SLOTS = BOX_MAX + LEVEL_MAX_NESTS;
 constexpr uint8_t FOX_MAX = LEVEL_MAX_FOXES;
 
 const Level* level = &LEVELS[0];
@@ -63,11 +64,12 @@ constexpr uint32_t EXIT_HOLD_MS = 3000;
 constexpr uint32_t EXIT_SHOW_MS = 1500;
 
 constexpr float GRAVITY = 0.7f;
-constexpr float JUMP_VELOCITY = -10.0f;
+constexpr float JUMP_VELOCITY = -11.1f;  // full jump peaks about 82 px up
 constexpr float JUMP_CUT_VELOCITY = -4.0f;  // released jump button early
 constexpr float MAX_FALL = 14.0f;
-constexpr float GLIDE_GRAVITY_FACTOR = 0.5f;  // pressing jump again midair
-constexpr float GLIDE_MAX_FALL_FACTOR = 0.5f;
+constexpr float GLIDE_GRAVITY_FACTOR = 0.5f / 3.0f;  // pressing jump again midair
+constexpr float GLIDE_MAX_FALL_FACTOR = 0.5f / 3.0f;
+constexpr float GLIDE_SPEED_FACTOR = 1.5f;  // horizontal speed while gliding
 constexpr float WALK_SPEED = 2.5f;
 constexpr float RUN_SPEED = 4.5f;
 constexpr float ACCEL = 0.5f;
@@ -122,6 +124,36 @@ int16_t columnAt(float worldX) {
 bool solidTile(int16_t col, int16_t row) {
   if (col < 0 || col >= level->tiles || row < 0 || row >= 32) return false;
   return (level->solid[col] >> row) & 1u;
+}
+
+// ---- Direction blocks -------------------------------------------------------
+// Solid tiles that the bird can pass through only while moving the way their
+// arrow points; to enemies they are ordinary tiles. The order matches the
+// masks in Level::arrows.
+enum ArrowDir : int8_t {
+  ARROW_NONE = -1,
+  ARROW_RIGHT,
+  ARROW_LEFT,
+  ARROW_UP,
+  ARROW_DOWN
+};
+
+int8_t arrowAt(int16_t col, int16_t row) {
+  if (col < 0 || col >= level->tiles || row < 0 || row >= 32) return ARROW_NONE;
+  for (int8_t dir = ARROW_RIGHT; dir <= ARROW_DOWN; ++dir) {
+    if ((level->arrows[col][dir] >> row) & 1u) return dir;
+  }
+  return ARROW_NONE;
+}
+
+// A solid tile that is not a direction block.
+bool plainTile(int16_t col, int16_t row) {
+  return solidTile(col, row) && arrowAt(col, row) == ARROW_NONE;
+}
+
+// True if the tile stops a bird that is moving in direction `moving`.
+bool blocksBird(int16_t col, int16_t row, ArrowDir moving) {
+  return solidTile(col, row) && arrowAt(col, row) != moving;
 }
 
 // ---- Boxes, eggs and rats ---------------------------------------------------
@@ -198,7 +230,7 @@ constexpr int16_t NEST_W = sfbNestWidth;
 constexpr int16_t NEST_H = sfbNestHeight;
 constexpr int16_t NEST_SINK = 0;
 
-Box boxes[BOX_SLOTS];  // the last slot is the nest (level goal)
+Box boxes[BOX_SLOTS];  // slots from BOX_MAX on are nests (goals)
 Egg eggs[BOX_SLOTS];   // eggs[i] belongs to boxes[i]
 Rat rats[BOX_SLOTS];   // rats[i] hatched from eggs[i]
 
@@ -214,7 +246,7 @@ constexpr float FOX_POUNCE_RANGE = 110.0f;
 constexpr uint8_t FOX_WINDUP_TICKS = 25;  // ~0.75 s crouch before the leap
 constexpr int16_t FOX_SINK = 0;
 constexpr uint8_t FOX_RECOVER_TICKS = 35;
-constexpr float FOX_LEAP_VELOCITY = -10.5f;    // about 78 px, higher than the bird
+constexpr float FOX_LEAP_VELOCITY = -10.5f;    // about 74 px, a bit lower than the bird
 constexpr float FOX_POUNCE_VX = 6.0f;
 constexpr float FOX_POUNCE_VY = 2.0f;
 
@@ -230,6 +262,11 @@ struct Fox {
 };
 
 Fox foxes[FOX_MAX];
+
+// Golden eggs: collectibles that hang where the map puts them. Dying restarts
+// the level, so they all come back.
+bool goldTaken[LEVEL_MAX_GOLDS];
+uint8_t goldCount = 0;  // collected on this attempt
 
 int16_t rowTop(int16_t row, int16_t screenH) {
   return screenH - (row + 1) * TILE;
@@ -258,9 +295,11 @@ void resolveWalls(Player& p, float prevX, int16_t screenH) {
         continue;
       }
       if (prevX + PLAYER_W <= c * TILE + 0.01f) {
+        if (!blocksBird(c, r, ARROW_RIGHT)) continue;
         p.x = c * TILE - PLAYER_W;  // came from the left
         p.vx = 0;
       } else if (prevX >= (c + 1) * TILE - 0.01f) {
+        if (!blocksBird(c, r, ARROW_LEFT)) continue;
         p.x = (c + 1) * TILE;  // came from the right
         p.vx = 0;
       }
@@ -316,7 +355,8 @@ bool landOnSurface(Player& p, int16_t screenH) {
   for (int16_t col = first; col <= last; ++col) {
     if (columnOverlap(p, col) < SUPPORT_OVERLAP) continue;
     for (int16_t r = 0; r < MAX_ROWS; ++r) {
-      if (!solidTile(col, r) || solidTile(col, r + 1)) continue;
+      // A direction block above does not hide the floor under it.
+      if (!blocksBird(col, r, ARROW_DOWN) || plainTile(col, r + 1)) continue;
       const float surface = rowTop(r, screenH);
       if (surface >= prevFeet - 4 && surface < best) best = surface;
     }
@@ -332,8 +372,9 @@ bool landOnSurface(Player& p, int16_t screenH) {
 
 // Y of the highest surface at or below `fromY` under a span of width `w`
 // (needs `minOverlap` px over a column), or a negative value if there is none.
+// `forBird` applies the direction block rules.
 float surfaceBelow(float x, float w, float fromY, float minOverlap,
-                   int16_t screenH) {
+                   int16_t screenH, bool forBird = false) {
   float best = 1e9f;
   const int16_t first = columnAt(x);
   const int16_t last = columnAt(x + w - 0.01f);
@@ -342,7 +383,10 @@ float surfaceBelow(float x, float w, float fromY, float minOverlap,
                           max(x, static_cast<float>(col * TILE));
     if (overlap < minOverlap) continue;
     for (int16_t r = 0; r < MAX_ROWS; ++r) {
-      if (!solidTile(col, r) || solidTile(col, r + 1)) continue;
+      const bool top = forBird ? blocksBird(col, r, ARROW_DOWN) &&
+                                     !plainTile(col, r + 1)
+                               : solidTile(col, r) && !solidTile(col, r + 1);
+      if (!top) continue;
       const float surface = rowTop(r, screenH);
       if (surface >= fromY - 4 && surface < best) best = surface;
     }
@@ -353,7 +397,7 @@ float surfaceBelow(float x, float w, float fromY, float minOverlap,
 
 // Where the bird would land (for its shadow); negative over a pit.
 float landingY(const Player& p, int16_t screenH) {
-  return surfaceBelow(p.x, PLAYER_W, p.y, SUPPORT_OVERLAP, screenH);
+  return surfaceBelow(p.x, PLAYER_W, p.y, SUPPORT_OVERLAP, screenH, true);
 }
 
 // Last line of defence: if the bird still ended up inside a tile (a deep
@@ -365,7 +409,8 @@ void unstick(Player& p, int16_t screenH) {
   for (int16_t c = first; c <= last; ++c) {
     if (columnOverlap(p, c) < SUPPORT_OVERLAP) continue;
     for (int16_t r = 0; r < MAX_ROWS; ++r) {
-      if (!solidTile(c, r)) continue;
+      // Direction blocks are skipped: the bird may be passing through one.
+      if (!plainTile(c, r)) continue;
       const float tileTop = rowTop(r, screenH);
       const float tileBottom = rowBottom(r, screenH);
       if (tileTop >= p.y - 2.0f || tileBottom <= top) continue;  // not inside
@@ -436,7 +481,7 @@ void bumpHead(Player& p, int16_t screenH) {
     for (int16_t r = 0; r < MAX_ROWS; ++r) {
       // Only a tile's exposed underside counts. Internal seams inside a wall
       // must not stop a bird that is rising beside it.
-      if (r == 0 || !solidTile(c, r) || solidTile(c, r - 1)) continue;
+      if (r == 0 || !blocksBird(c, r, ARROW_UP) || plainTile(c, r - 1)) continue;
       const float bottom = rowBottom(r, screenH);
       if (head < bottom && prevHead >= bottom - 4) {
         p.y = bottom + height;
@@ -463,6 +508,10 @@ bool hasHeadroom(const Player& p, int16_t screenH) {
   for (int16_t c = first; c <= last; ++c) {
     for (int16_t r = 0; r < MAX_ROWS; ++r) {
       if (!solidTile(c, r)) continue;
+      // A standing bird walking into a direction block must not be forced to
+      // crouch; only standing up into one from below is stopped.
+      const int8_t arrow = arrowAt(c, r);
+      if (arrow != ARROW_NONE && (!p.ducking || arrow == ARROW_UP)) continue;
       if (rowTop(r, screenH) < crouchTop && rowBottom(r, screenH) > standTop) {
         return false;
       }
@@ -534,7 +583,20 @@ void drawLayer(TFT_eSPI& d, bool (*solid)(int16_t, int16_t), const uint16_t* til
 
 void drawGround(TFT_eSPI& d, int16_t cameraX, int16_t screenH) {
   drawLayer(d, decorTile, sfbDirt, cameraX, screenH);  // dirt / background
-  drawLayer(d, solidTile, sfbGrass, cameraX, screenH);
+  drawLayer(d, plainTile, sfbGrass, cameraX, screenH);
+
+  const uint16_t* const arrowArt[] = {sfbArrowRight, sfbArrowLeft, sfbArrowUp,
+                                      sfbArrowDown};
+  const int16_t first = max(0, cameraX / TILE);
+  const int16_t last = min<int16_t>(level->tiles - 1, (cameraX + d.width()) / TILE);
+  for (int16_t col = first; col <= last; ++col) {
+    for (int16_t row = 0; row < MAX_ROWS; ++row) {
+      const int8_t arrow = arrowAt(col, row);
+      if (arrow == ARROW_NONE) continue;
+      drawScaled(d, col * TILE - cameraX, rowTop(row, screenH), 16, 16,
+                 arrowArt[arrow], false, TILE, SCALE);
+    }
+  }
 }
 
 void drawBoxesAndEggs(TFT_eSPI& d, int16_t cameraX) {
@@ -560,6 +622,16 @@ void drawBoxesAndEggs(TFT_eSPI& d, int16_t cameraX) {
                                      ? sfbNest
                                      : (b.used ? sfbMysteryOff : sfbMystery));
     drawScaled(d, bx, b.y - b.bump, b.w, b.h, art, false, b.h, 1);
+  }
+}
+
+void drawGoldEggs(TFT_eSPI& d, int16_t cameraX, int16_t screenH) {
+  for (uint8_t i = 0; i < level->goldCount; ++i) {
+    if (goldTaken[i]) continue;
+    const int16_t x = level->golds[i][0] * TILE - cameraX;
+    if (x + EGG_SIZE < 0 || x > d.width()) continue;
+    drawScaled(d, x, rowTop(level->golds[i][1], screenH), 16, 16, sfbGoldEgg,
+               false, EGG_SIZE, 1);
   }
 }
 
@@ -614,6 +686,7 @@ void drawFrame(TFT_eSPI& d, const Player& p, const Gorilla* gorillas,
 
   drawGround(d, cameraX, screenH);
   drawBoxesAndEggs(d, cameraX);
+  drawGoldEggs(d, cameraX, screenH);
 
   for (uint8_t i = 0; i < MAX_GORILLAS; ++i) {
     const Gorilla& g = gorillas[i];
@@ -689,6 +762,19 @@ void drawFrame(TFT_eSPI& d, const Player& p, const Gorilla* gorillas,
   for (int i = 0; i < PLAYER_MAX_HP; ++i) {
     drawHeart(d, d.width() - 14 * (PLAYER_MAX_HP - i) - 2, 4,
               i < hud.hp ? TFT_RED : 0x4208);
+  }
+  // Golden eggs collected, under the hearts.
+  if (level->goldCount > 0) {
+    char eggText[12];
+    snprintf(eggText, sizeof(eggText), "%d/%d", goldCount, level->goldCount);
+    d.setTextFont(1);
+    d.setTextSize(1);
+    d.setTextDatum(TR_DATUM);
+    d.setTextColor(TFT_WHITE, TFT_BLACK);
+    d.drawString(eggText, d.width() - 4, 22);
+    // drawScaled takes world y, so add the camera offset back.
+    drawScaled(d, d.width() - 22 - d.textWidth(eggText), 18 + gCameraY, 16, 16,
+               sfbGoldEgg, false, EGG_SIZE, 1);
   }
   int16_t barY = 4;
   if (hud.jumpLeftMs > 0) {
@@ -817,6 +903,8 @@ void updateGorillas(Gorilla* g, Player& p, int16_t screenH) {
 }
 
 void initObjects(int16_t screenH) {
+  for (auto& taken : goldTaken) taken = false;
+  goldCount = 0;
   for (uint8_t i = 0; i < BOX_SLOTS; ++i) {
     eggs[i] = {EggState::None, 0, 0, 0, 0, 0, false, false};
     rats[i] = {false, 0, 0, 0, true};
@@ -829,13 +917,16 @@ void initObjects(int16_t screenH) {
       boxes[i] = {0, 0, BOX_SIZE, BOX_SIZE, BoxKind::Plain, true, false, 0};
     }
   }
-  // The nest: bottom on the ground, centered over its column.
-  const int16_t col = level->nestCol;
-  boxes[BOX_SLOTS - 1] = {
-      static_cast<int16_t>(col * TILE + (TILE - NEST_W) / 2),
-      static_cast<int16_t>(spawnY(level->nestRow, screenH) - NEST_H + NEST_SINK),
-      NEST_W, NEST_H,
-      BoxKind::Nest, false, false, 0};
+  // Nests: bottom on the ground, centered over their column.
+  for (uint8_t i = 0; i < level->nestCount; ++i) {
+    const int16_t col = level->nests[i][0];
+    const int16_t row = level->nests[i][1];
+    boxes[BOX_MAX + i] = {
+        static_cast<int16_t>(col * TILE + (TILE - NEST_W) / 2),
+        static_cast<int16_t>(spawnY(row, screenH) - NEST_H + NEST_SINK),
+        NEST_W, NEST_H,
+        BoxKind::Nest, false, false, 0};
+  }
   for (uint8_t i = 0; i < FOX_MAX; ++i) {
     if (i >= level->foxCount) {
       foxes[i] = {false, 0, 0, 0, 0, FoxState::Idle, 0, false};
@@ -891,6 +982,18 @@ bool updateObjects(Player& p, Status& st, uint32_t now, int16_t screenH) {
         min(p.x + PLAYER_W, static_cast<float>(b.x + b.w)) -
                 max(p.x, static_cast<float>(b.x)) >= 8.0f) {
       atNest = true;
+    }
+  }
+
+  for (uint8_t i = 0; i < level->goldCount; ++i) {
+    if (goldTaken[i]) continue;
+    const float x = level->golds[i][0] * TILE;
+    const float top = rowTop(level->golds[i][1], screenH);
+    if (p.x + PLAYER_W > x && p.x < x + EGG_SIZE && pBottom > top &&
+        pTop < top + EGG_SIZE) {
+      goldTaken[i] = true;
+      ++goldCount;
+      audioPlayTone(1760, 60);
     }
   }
 
@@ -1148,7 +1251,7 @@ void runSuperFlashyBirds(TFT_eSPI& display) {
   uint32_t levelMs = 0;  // time on the current level (running through deaths)
   uint32_t totalMs = 0;  // time across all levels
   uint32_t lastTick = millis();
-  bool gliding = false;       // second jump press in the air; ends on landing
+  bool gliding = false;       // toggled by jump in the air; ends on landing
   uint32_t lastFrame = millis();
   Button pendingDirection = Button::None;
   bool pendingJump = false;
@@ -1210,8 +1313,8 @@ void runSuperFlashyBirds(TFT_eSPI& display) {
     if (pendingJump) {
       jumpBufferUntil = now + JUMP_BUFFER_MS;
       pendingJump = false;
-      // Pressing jump again while already in the air starts a glide.
-      if (!p.onGround) gliding = true;
+      // Pressing jump again while already in the air toggles the glide.
+      if (!p.onGround) gliding = !gliding;
     }
     const bool coasting = now - lastDirectionHeld < MOMENTUM_GRACE_MS;
 
@@ -1267,13 +1370,15 @@ void runSuperFlashyBirds(TFT_eSPI& display) {
     if (!wantJump && p.vy < JUMP_CUT_VELOCITY) {
       p.vy = JUMP_CUT_VELOCITY;
     }
-    // Gliding halves gravity (and the fall speed) while the bird is falling.
+    // Gliding cuts gravity (and the fall speed) while the bird is falling.
     p.vy += (gliding && p.vy >= 0) ? GRAVITY * GLIDE_GRAVITY_FACTOR : GRAVITY;
     const float maxFall = gliding ? MAX_FALL * GLIDE_MAX_FALL_FACTOR : MAX_FALL;
     if (p.vy > maxFall) p.vy = maxFall;
 
     const float prevX = p.x;
-    p.x += p.vx;
+    // Gliding covers more ground; vx itself is untouched, so the extra speed
+    // ends as soon as the glide does.
+    p.x += gliding ? p.vx * GLIDE_SPEED_FACTOR : p.vx;
     if (p.onGround && !p.ducking && fabsf(p.vx) > 0.3f) {
       p.stride += p.running ? RUN_FRAMES_PER_TICK : WALK_FRAMES_PER_TICK;
     } else if (p.onGround) {
@@ -1334,8 +1439,13 @@ void runSuperFlashyBirds(TFT_eSPI& display) {
     TFT_eSPI& target = useSprite ? static_cast<TFT_eSPI&>(frame) : display;
     drawFrame(target, p, gorillas, cameraX, cameraY, worldH, hud);
     if (levelDone) {
-      char title[24], levelTime[16], totalTime[16], times[40];
-      snprintf(title, sizeof(title), "Level %d complete!", levelIndex + 1);
+      char title[40], levelTime[16], totalTime[16], times[40];
+      if (level->goldCount > 0) {
+        snprintf(title, sizeof(title), "Level %d complete!  Eggs %d/%d",
+                 levelIndex + 1, goldCount, level->goldCount);
+      } else {
+        snprintf(title, sizeof(title), "Level %d complete!", levelIndex + 1);
+      }
       formatTime(levelTime, sizeof(levelTime), levelMs);
       formatTime(totalTime, sizeof(totalTime), totalMs);
       snprintf(times, sizeof(times), "Level %s   Total %s", levelTime, totalTime);

@@ -1,7 +1,7 @@
 # Super Flashy Birds - Level 1
 # See levels/README.md for the full list of symbols.
 #   X ground   H background hill   S start   N nest (goal)
-#   G gorilla  R red gorilla       F fox     B box   M mystery box
+#   G gorilla  g red gorilla       F fox     B box   M mystery box
 # (scaled up 2x from the old 32 px tile version; the original is in old-32px/)
 ................................................................................................................................................
 ................................................................................................................................................
@@ -14,6 +14,6 @@
 ........................................XXXX................................XXXXXX....................XXXXXXXXXXXXXX......XXXXHHHHHHHH....HHHH..
 ......B.M.B.............................XXXX..................B.M.B.........XXXXXX....................XXXXXXXXXXXXXX......XXXXHHHHHHHHM.B.HHHH..
 ............XXXXXX..................XXXXXXXXXXXX......................XXXXXXXXXXXX..............XXXX........XXXX........XXHHHHHHHHHH....HHHH....
-....S.......XXXXXX..R.........G.F...XXXXXXXXXXXX..R...............G...XXXXXXXXXXXX..F...........XXXX....G...XXXX....R...XXHHHHHHHHHHF.G.HHHHN...
+....S.......XXXXXX..g.........G.F...XXXXXXXXXXXX..g...............G...XXXXXXXXXXXX..F...........XXXX....G...XXXX....g...XXHHHHHHHHHHF.G.HHHHN...
 XXXXXXXXXXXXXXXXXXXXXXXX....XXXXXXXXXXXXXXXXXXXXXXXXXXXX......XXXXXXXXXXXXXXXXXXXXXXXXXX....XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
 XXXXXXXXXXXXXXXXXXXXXXXX....XXXXXXXXXXXXXXXXXXXXXXXXXXXX......XXXXXXXXXXXXXXXXXXXXXXXXXX....XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX

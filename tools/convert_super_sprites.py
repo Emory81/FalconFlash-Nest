@@ -13,6 +13,7 @@ ART = ROOT / "include" / "art" / "super-flashy-birds"
 OUT = ROOT / "include" / "super_flashy_sprites.h"
 
 TRANSPARENT = 0xF81F
+ARROW = ROOT / "include" / "art" / "DirectionalBlock.png"
 
 SPRITES = [
     ("sfbBird", ART / "FlashyBirdStandStill.png"),
@@ -42,6 +43,12 @@ SPRITES = [
     ("sfbNest", ART / "Nest.png"),
     ("sfbEggCracking", ART / "CrackingEgg.png"),
     ("sfbEggOpen", ART / "CrackedOpenEgg.png"),
+    ("sfbGoldEgg", ART / "GoldenEgg.png"),
+    # Direction blocks: one drawing (pointing right), rotated counterclockwise.
+    ("sfbArrowRight", ARROW),
+    ("sfbArrowLeft", ARROW, 1.0, 180),
+    ("sfbArrowUp", ARROW, 1.0, 90),
+    ("sfbArrowDown", ARROW, 1.0, 270),
 ]
 
 
@@ -49,8 +56,8 @@ def rgb565(r: int, g: int, b: int) -> int:
     return ((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3)
 
 
-def convert(path: Path, shade: float = 1.0):
-    image = Image.open(path).convert("RGBA")
+def convert(path: Path, shade: float = 1.0, angle: int = 0):
+    image = Image.open(path).convert("RGBA").rotate(angle, expand=True)
     pixels = []
     for y in range(image.height):
         for x in range(image.width):
@@ -72,8 +79,8 @@ def main() -> None:
         "constexpr uint16_t SFB_TRANSPARENT = 0xF81F;",
         "",
     ]
-    for name, path, *shade in SPRITES:
-        w, h, pixels = convert(path, *shade)
+    for name, path, *options in SPRITES:
+        w, h, pixels = convert(path, *options)
         upper = name[0].upper() + name[1:]
         lines.append(f"constexpr uint16_t {name}Width = {w};")
         lines.append(f"constexpr uint16_t {name}Height = {h};")

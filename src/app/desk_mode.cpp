@@ -490,7 +490,11 @@ void drawWeatherBlock(TFT_eSPI& canvas, const DeskWeather& weather, uint16_t bg,
   canvas.setTextDatum(ML_DATUM);
   if (weather.valid) {
     char temperature[16];
-    snprintf(temperature, sizeof(temperature), "%d F", weather.temperatureF);
+    if (weather.hasTemperature) {
+      snprintf(temperature, sizeof(temperature), "%d F", weather.temperatureF);
+    } else {
+      snprintf(temperature, sizeof(temperature), "-- F");
+    }
     canvas.setTextSize(2);
     canvas.setTextColor(fg, bg);
     canvas.drawString(temperature, centerX - 18, 90);

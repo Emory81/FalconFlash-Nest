@@ -1,4 +1,4 @@
-#include "network/desk_data.h"
+﻿#include "network/desk_data.h"
 
 #include <HTTPClient.h>
 #include <WiFi.h>
@@ -14,8 +14,11 @@
 void releaseDeskSpotifyArt(DeskSpotify& spotify);
 
 namespace {
+// Open-Meteo, keyless. Mechanicsburg, PA (40.2143, -77.0086).
 constexpr char WEATHER_URL[] =
-    "https://api.weather.gov/stations/KCXY/observations/latest";
+    "https://api.open-meteo.com/v1/forecast?latitude=40.2143&longitude=-77.0086"
+    "&current=temperature_2m,weather_code,is_day"
+    "&temperature_unit=fahrenheit&timezone=America%2FNew_York";
 constexpr char MEALS_URL[] = "http://158.69.214.241:4050/api/meals";
 constexpr char NEWS_URL[] =
     "https://news.google.com/rss?hl=en-US&gl=US&ceid=US:en";
@@ -27,6 +30,7 @@ constexpr char USER_AGENT[] =
 constexpr char SPOTIFY_PATH[] = "/nest/device/spotify/now-playing";
 constexpr uint32_t WIFI_WAIT_MS = 10000;
 constexpr uint32_t WEATHER_REFRESH_MS = 5UL * 60UL * 1000UL;
+constexpr uint32_t WEATHER_RETRY_MS = 30UL * 1000UL;
 constexpr uint32_t STOCKS_REFRESH_MS = 60UL * 1000UL;
 constexpr uint32_t MEALS_RETRY_MS = 5UL * 60UL * 1000UL;
 constexpr uint32_t HEADLINES_REFRESH_MS = 15UL * 60UL * 1000UL;
@@ -132,37 +136,80 @@ bool getPlainText(const String& url, String& response) {
   return status >= 200 && status < 300;
 }
 
-DeskWeatherIcon weatherIconFor(String condition) {
-  condition.toLowerCase();
-  if (condition.indexOf("thunder") >= 0 ||
-      condition.indexOf("storm") >= 0) {
-    return DeskWeatherIcon::Storm;
-  }
-  if (condition.indexOf("snow") >= 0 ||
-      condition.indexOf("sleet") >= 0 ||
-      condition.indexOf("ice") >= 0) {
-    return DeskWeatherIcon::Snow;
-  }
-  if (condition.indexOf("rain") >= 0 ||
-      condition.indexOf("shower") >= 0 ||
-      condition.indexOf("drizzle") >= 0) {
-    return DeskWeatherIcon::Rain;
-  }
-  if (condition.indexOf("fog") >= 0 ||
-      condition.indexOf("mist") >= 0 ||
-      condition.indexOf("haze") >= 0) {
-    return DeskWeatherIcon::Fog;
-  }
-  if (condition.indexOf("cloud") >= 0 ||
-      condition.indexOf("overcast") >= 0) {
-    return DeskWeatherIcon::Cloud;
-  }
-  if (condition.indexOf("clear") >= 0 ||
-      condition.indexOf("sun") >= 0 ||
-      condition.indexOf("fair") >= 0) {
+// WMO weather interpretation codes used by Open-Meteo.
+DeskWeatherIcon wmoIcon(int code) {
+  if (code == 0 || code == 1) {
     return DeskWeatherIcon::Sun;
   }
+  if (code == 2 || code == 3) {
+    return DeskWeatherIcon::Cloud;
+  }
+  if (code == 45 || code == 48) {
+    return DeskWeatherIcon::Fog;
+  }
+  if (code >= 51 && code <= 67) {
+    return DeskWeatherIcon::Rain;
+  }
+  if (code >= 71 && code <= 77) {
+    return DeskWeatherIcon::Snow;
+  }
+  if (code >= 80 && code <= 82) {
+    return DeskWeatherIcon::Rain;
+  }
+  if (code >= 85 && code <= 86) {
+    return DeskWeatherIcon::Snow;
+  }
+  if (code >= 95 && code <= 99) {
+    return DeskWeatherIcon::Storm;
+  }
   return DeskWeatherIcon::Unknown;
+}
+
+String wmoConditionText(int code) {
+  switch (code) {
+    case 0:
+      return "Clear";
+    case 1:
+      return "Mainly clear";
+    case 2:
+      return "Partly cloudy";
+    case 3:
+      return "Overcast";
+    case 45:
+    case 48:
+      return "Fog";
+    case 51:
+    case 53:
+    case 55:
+    case 56:
+    case 57:
+      return "Drizzle";
+    case 61:
+    case 63:
+    case 65:
+    case 66:
+    case 67:
+      return "Rain";
+    case 71:
+    case 73:
+    case 75:
+    case 77:
+      return "Snow";
+    case 80:
+    case 81:
+    case 82:
+      return "Rain showers";
+    case 85:
+    case 86:
+      return "Snow showers";
+    case 95:
+      return "Thunderstorm";
+    case 96:
+    case 99:
+      return "Thunderstorm with hail";
+    default:
+      return "Conditions unavailable";
+  }
 }
 
 bool isLocalNight() {
@@ -181,31 +228,30 @@ bool fetchWeather(DeskWeather& weather) {
     return false;
   }
 
-  const String condition = extractJsonScalar(response, "textDescription");
-  const int temperatureSection = response.indexOf("\"temperature\"");
-  const String celsiusText =
-      extractJsonScalar(response, "value", temperatureSection);
-  if (condition.length() == 0 || celsiusText.length() == 0) {
+  // Open-Meteo "current" block: temperature already in F, WMO code, is_day.
+  const int currentStart = response.indexOf("\"current\"");
+  if (currentStart < 0) {
+    return false;
+  }
+  const String tempText =
+      extractJsonScalar(response, "temperature_2m", currentStart);
+  const String codeText =
+      extractJsonScalar(response, "weather_code", currentStart);
+  const String isDayText = extractJsonScalar(response, "is_day", currentStart);
+  if (tempText.length() == 0 || codeText.length() == 0) {
     return false;
   }
 
-  const float celsius = celsiusText.toFloat();
+  const int code = codeText.toInt();
   weather.valid = true;
-  weather.temperatureF =
-      static_cast<int16_t>(lroundf(celsius * 9.0f / 5.0f + 32.0f));
-  weather.condition = condition;
-  weather.icon = weatherIconFor(condition);
-  const String iconUrl = extractJsonScalar(response, "icon");
-  if (iconUrl.indexOf("/night/") >= 0) {
-    weather.isNight = true;
-  } else if (iconUrl.indexOf("/day/") >= 0) {
-    weather.isNight = false;
-  } else {
-    weather.isNight = isLocalNight();
-  }
+  weather.hasTemperature = true;
+  weather.temperatureF = static_cast<int16_t>(lroundf(tempText.toFloat()));
+  weather.condition = wmoConditionText(code);
+  weather.icon = wmoIcon(code);
+  weather.isNight =
+      isDayText.length() > 0 ? isDayText.toInt() == 0 : isLocalNight();
   return true;
 }
-
 bool fetchStock(DeskStock& stock) {
   String response;
   const String url =
@@ -694,10 +740,15 @@ uint32_t currentDayKey() {
 
 void refreshWeatherNow(DeskData& data) {
   DeskWeather weather = data.weather;
-  if (fetchWeather(weather)) {
+  const bool ok = fetchWeather(weather);
+  if (ok) {
     data.weather = weather;
+    data.weatherFetchedAt = stampNow();
+  } else {
+    // Failed: retry in WEATHER_RETRY_MS instead of waiting a full interval.
+    data.weatherFetchedAt =
+        stampNow() - (WEATHER_REFRESH_MS - WEATHER_RETRY_MS);
   }
-  data.weatherFetchedAt = stampNow();
 }
 
 void refreshMealsNow(DeskData& data) {

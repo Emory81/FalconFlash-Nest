@@ -15,6 +15,7 @@ enum class DeskWeatherIcon : uint8_t {
 
 struct DeskWeather {
   bool valid = false;
+  bool hasTemperature = false;
   int16_t temperatureF = 0;
   String condition;
   DeskWeatherIcon icon = DeskWeatherIcon::Unknown;

@@ -1227,8 +1227,6 @@ void runCountdownTimer(const char* priceText, bool demoMode,
     // orders to be rejected, while sending the same IDs is a valid override.
     const uint8_t pickupOverrideMask = pickupLocationMask;
     drawProcessingOrder();
-    // OTA was deferred from wake so the timer could appear faster.
-    checkForFirmwareUpdate(tft, orderButtonNumber);
     prepareGameAssetsForOrderRequest();
     DeviceOrderStatus orderStatus = DeviceOrderStatus::Unavailable;
     String orderFailureDetail;
@@ -1295,13 +1293,13 @@ void setup() {
   }
 
   if (demoMode) {
-    // OTA is deferred off the wake path so the timer appears sooner.
+    checkForFirmwareUpdate(tft, static_cast<uint8_t>(wakeButton));
     runCountdownTimer("DEMO $4.25", true, 0, 0);
     return;
   }
 
   ensureDevicePaired(tft);
-  // Skip blocking GitHub OTA here (~1-2s). Check after the timer instead.
+  checkForFirmwareUpdate(tft, static_cast<uint8_t>(wakeButton));
   String priceText;
   uint8_t savedPickupLocationMask = 0;
   const uint8_t orderButtonNumber = static_cast<uint8_t>(wakeButton);

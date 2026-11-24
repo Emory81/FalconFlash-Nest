@@ -1,4 +1,4 @@
-#include "network/desk_data.h"
+﻿#include "network/desk_data.h"
 
 #include <HTTPClient.h>
 #include <WiFi.h>
@@ -14,8 +14,11 @@
 void releaseDeskSpotifyArt(DeskSpotify& spotify);
 
 namespace {
+// Open-Meteo, keyless. Mechanicsburg, PA (40.2143, -77.0086).
 constexpr char WEATHER_URL[] =
-    "https://api.weather.gov/stations/KCXY/observations/latest";
+    "https://api.open-meteo.com/v1/forecast?latitude=40.2143&longitude=-77.0086"
+    "&current=temperature_2m,weather_code,is_day"
+    "&temperature_unit=fahrenheit&timezone=America%2FNew_York";
 constexpr char MEALS_URL[] = "http://158.69.214.241:4050/api/meals";
 constexpr char NEWS_URL[] =
     "https://news.google.com/rss?hl=en-US&gl=US&ceid=US:en";
@@ -26,11 +29,12 @@ constexpr char USER_AGENT[] =
     "FalconFlash-Nest contact@falconflash.co";
 constexpr char SPOTIFY_PATH[] = "/nest/device/spotify/now-playing";
 constexpr uint32_t WIFI_WAIT_MS = 10000;
-constexpr uint32_t WEATHER_STOCK_REFRESH_MS = 5UL * 60UL * 1000UL;
-constexpr uint32_t MEALS_REFRESH_MS = 60UL * 60UL * 1000UL;
+constexpr uint32_t WEATHER_REFRESH_MS = 5UL * 60UL * 1000UL;
+constexpr uint32_t WEATHER_RETRY_MS = 30UL * 1000UL;
+constexpr uint32_t STOCKS_REFRESH_MS = 60UL * 1000UL;
+constexpr uint32_t MEALS_RETRY_MS = 5UL * 60UL * 1000UL;
 constexpr uint32_t HEADLINES_REFRESH_MS = 15UL * 60UL * 1000UL;
-constexpr uint32_t SPOTIFY_REFRESH_MS = 8UL * 1000UL;
-constexpr uint32_t SPOTIFY_PLAYING_REFRESH_MS = 4UL * 1000UL;
+constexpr uint32_t SPOTIFY_REFRESH_MS = 4UL * 1000UL;
 constexpr uint32_t HTTP_TIMEOUT_MS = 8000;
 constexpr size_t SPOTIFY_ART_MAX_BYTES = 64 * 64 * 2;
 bool clockStarted = false;
@@ -132,37 +136,90 @@ bool getPlainText(const String& url, String& response) {
   return status >= 200 && status < 300;
 }
 
-DeskWeatherIcon weatherIconFor(String condition) {
-  condition.toLowerCase();
-  if (condition.indexOf("thunder") >= 0 ||
-      condition.indexOf("storm") >= 0) {
-    return DeskWeatherIcon::Storm;
-  }
-  if (condition.indexOf("snow") >= 0 ||
-      condition.indexOf("sleet") >= 0 ||
-      condition.indexOf("ice") >= 0) {
-    return DeskWeatherIcon::Snow;
-  }
-  if (condition.indexOf("rain") >= 0 ||
-      condition.indexOf("shower") >= 0 ||
-      condition.indexOf("drizzle") >= 0) {
-    return DeskWeatherIcon::Rain;
-  }
-  if (condition.indexOf("fog") >= 0 ||
-      condition.indexOf("mist") >= 0 ||
-      condition.indexOf("haze") >= 0) {
-    return DeskWeatherIcon::Fog;
-  }
-  if (condition.indexOf("cloud") >= 0 ||
-      condition.indexOf("overcast") >= 0) {
-    return DeskWeatherIcon::Cloud;
-  }
-  if (condition.indexOf("clear") >= 0 ||
-      condition.indexOf("sun") >= 0 ||
-      condition.indexOf("fair") >= 0) {
+// WMO weather interpretation codes used by Open-Meteo.
+DeskWeatherIcon wmoIcon(int code) {
+  if (code == 0 || code == 1) {
     return DeskWeatherIcon::Sun;
   }
+  if (code == 2 || code == 3) {
+    return DeskWeatherIcon::Cloud;
+  }
+  if (code == 45 || code == 48) {
+    return DeskWeatherIcon::Fog;
+  }
+  if (code >= 51 && code <= 67) {
+    return DeskWeatherIcon::Rain;
+  }
+  if (code >= 71 && code <= 77) {
+    return DeskWeatherIcon::Snow;
+  }
+  if (code >= 80 && code <= 82) {
+    return DeskWeatherIcon::Rain;
+  }
+  if (code >= 85 && code <= 86) {
+    return DeskWeatherIcon::Snow;
+  }
+  if (code >= 95 && code <= 99) {
+    return DeskWeatherIcon::Storm;
+  }
   return DeskWeatherIcon::Unknown;
+}
+
+String wmoConditionText(int code) {
+  switch (code) {
+    case 0:
+      return "Clear";
+    case 1:
+      return "Mainly clear";
+    case 2:
+      return "Partly cloudy";
+    case 3:
+      return "Overcast";
+    case 45:
+    case 48:
+      return "Fog";
+    case 51:
+    case 53:
+    case 55:
+    case 56:
+    case 57:
+      return "Drizzle";
+    case 61:
+    case 63:
+    case 65:
+    case 66:
+    case 67:
+      return "Rain";
+    case 71:
+    case 73:
+    case 75:
+    case 77:
+      return "Snow";
+    case 80:
+    case 81:
+    case 82:
+      return "Rain showers";
+    case 85:
+    case 86:
+      return "Snow showers";
+    case 95:
+      return "Thunderstorm";
+    case 96:
+    case 99:
+      return "Thunderstorm with hail";
+    default:
+      return "Conditions unavailable";
+  }
+}
+
+bool isLocalNight() {
+  const time_t now = time(nullptr);
+  if (now < 100000) {
+    return false;
+  }
+  struct tm localTime = {};
+  localtime_r(&now, &localTime);
+  return localTime.tm_hour < 6 || localTime.tm_hour >= 19;
 }
 
 bool fetchWeather(DeskWeather& weather) {
@@ -171,23 +228,30 @@ bool fetchWeather(DeskWeather& weather) {
     return false;
   }
 
-  const String condition = extractJsonScalar(response, "textDescription");
-  const int temperatureSection = response.indexOf("\"temperature\"");
-  const String celsiusText =
-      extractJsonScalar(response, "value", temperatureSection);
-  if (condition.length() == 0 || celsiusText.length() == 0) {
+  // Open-Meteo "current" block: temperature already in F, WMO code, is_day.
+  const int currentStart = response.indexOf("\"current\"");
+  if (currentStart < 0) {
+    return false;
+  }
+  const String tempText =
+      extractJsonScalar(response, "temperature_2m", currentStart);
+  const String codeText =
+      extractJsonScalar(response, "weather_code", currentStart);
+  const String isDayText = extractJsonScalar(response, "is_day", currentStart);
+  if (tempText.length() == 0 || codeText.length() == 0) {
     return false;
   }
 
-  const float celsius = celsiusText.toFloat();
+  const int code = codeText.toInt();
   weather.valid = true;
-  weather.temperatureF =
-      static_cast<int16_t>(lroundf(celsius * 9.0f / 5.0f + 32.0f));
-  weather.condition = condition;
-  weather.icon = weatherIconFor(condition);
+  weather.hasTemperature = true;
+  weather.temperatureF = static_cast<int16_t>(lroundf(tempText.toFloat()));
+  weather.condition = wmoConditionText(code);
+  weather.icon = wmoIcon(code);
+  weather.isNight =
+      isDayText.length() > 0 ? isDayText.toInt() == 0 : isLocalNight();
   return true;
 }
-
 bool fetchStock(DeskStock& stock) {
   String response;
   const String url =
@@ -334,14 +398,15 @@ int8_t base64Value(char character) {
   return -1;
 }
 
-bool decodeBase64(const String& encoded, uint8_t*& output, size_t& outputLen) {
+bool decodeBase64Slice(const char* encoded, size_t encodedLen,
+                       uint8_t*& output, size_t& outputLen) {
   output = nullptr;
   outputLen = 0;
-  if (encoded.length() == 0) {
+  if (encoded == nullptr || encodedLen == 0) {
     return false;
   }
 
-  const size_t capacity = (encoded.length() / 4) * 3 + 3;
+  const size_t capacity = (encodedLen / 4) * 3 + 3;
   if (capacity > SPOTIFY_ART_MAX_BYTES + 64) {
     return false;
   }
@@ -353,7 +418,7 @@ bool decodeBase64(const String& encoded, uint8_t*& output, size_t& outputLen) {
   size_t outIndex = 0;
   int values[4];
   uint8_t valueCount = 0;
-  for (uint16_t index = 0; index < encoded.length(); ++index) {
+  for (size_t index = 0; index < encodedLen; ++index) {
     const char character = encoded[index];
     if (character == '=' || isspace(character)) {
       if (character == '=') {
@@ -386,6 +451,35 @@ bool decodeBase64(const String& encoded, uint8_t*& output, size_t& outputLen) {
   return outIndex > 0;
 }
 
+bool findJsonStringRange(const String& json, const char* key, int searchFrom,
+                         int& valueStart, int& valueLen) {
+  valueStart = -1;
+  valueLen = 0;
+  const String token = "\"" + String(key) + "\"";
+  const int keyStart = json.indexOf(token, searchFrom);
+  if (keyStart < 0) {
+    return false;
+  }
+  const int colon = json.indexOf(':', keyStart + token.length());
+  if (colon < 0) {
+    return false;
+  }
+  int cursor = colon + 1;
+  while (cursor < json.length() && isspace(json[cursor])) {
+    ++cursor;
+  }
+  if (cursor >= json.length() || json[cursor] != '"') {
+    return false;
+  }
+  valueStart = cursor + 1;
+  const int endQuote = json.indexOf('"', valueStart);
+  if (endQuote < 0) {
+    return false;
+  }
+  valueLen = endQuote - valueStart;
+  return valueLen > 0;
+}
+
 bool jsonFlagIsTrue(const String& json, const char* key) {
   String value = extractJsonScalar(json, key);
   value.toLowerCase();
@@ -394,7 +488,40 @@ bool jsonFlagIsTrue(const String& json, const char* key) {
 
 bool fetchSpotify(DeskSpotify& spotify) {
   String response;
-  if (!fetchAuthenticatedJson(SPOTIFY_PATH, response)) {
+  int httpStatus = 0;
+  const bool ok = fetchAuthenticatedJson(SPOTIFY_PATH, response, &httpStatus);
+  const String linkedRaw = ok || response.length() > 0
+                               ? extractJsonScalar(response, "linked")
+                               : String();
+  String linkedLower = linkedRaw;
+  linkedLower.toLowerCase();
+  String bodyLower = response;
+  bodyLower.toLowerCase();
+  // Account not linked: either an explicit linked=false or an error response
+  // that says so. Show the "Link Spotify" prompt rather than stale/unavailable.
+  const bool notLinked =
+      linkedLower == "false" || linkedLower == "0" ||
+      (!ok && (httpStatus == 404 || httpStatus == 409 || httpStatus == 412 ||
+               httpStatus == 424) &&
+       (bodyLower.indexOf("not linked") >= 0 ||
+        bodyLower.indexOf("not_linked") >= 0 ||
+        bodyLower.indexOf("not connected") >= 0 ||
+        bodyLower.indexOf("no spotify") >= 0));
+  if (notLinked) {
+    releaseDeskSpotifyArt(spotify);
+    spotify.valid = true;
+    spotify.linked = false;
+    spotify.isPlaying = false;
+    spotify.progressMs = 0;
+    spotify.durationMs = 0;
+    spotify.emptyPolls = 0;
+    spotify.track = "";
+    spotify.artists = "";
+    spotify.album = "";
+    spotify.fetchedAt = millis() == 0 ? 1 : millis();
+    return true;
+  }
+  if (!ok) {
     return false;
   }
 
@@ -402,7 +529,6 @@ bool fetchSpotify(DeskSpotify& spotify) {
   next.valid = true;
   // Only trust an explicit linked value; missing/truncated JSON must not flash
   // "Link Spotify on Nest" while a session was already linked and playing.
-  const String linkedRaw = extractJsonScalar(response, "linked");
   if (linkedRaw.length() > 0) {
     String linkedValue = linkedRaw;
     linkedValue.toLowerCase();
@@ -412,21 +538,41 @@ bool fetchSpotify(DeskSpotify& spotify) {
   }
   next.isPlaying = jsonFlagIsTrue(response, "is_playing") ||
                    jsonFlagIsTrue(response, "playing");
-  next.progressMs = extractJsonScalar(response, "progress_ms").toInt();
-  next.durationMs = extractJsonScalar(response, "duration_ms").toInt();
+  const String progressRaw = extractJsonScalar(response, "progress_ms");
+  const String durationRaw = extractJsonScalar(response, "duration_ms");
+  next.progressMs = progressRaw.toInt();
+  next.durationMs = durationRaw.toInt();
   next.track = extractJsonScalar(response, "track");
   next.artists = extractJsonScalar(response, "artists");
   next.album = extractJsonScalar(response, "album");
   next.fetchedAt = millis() == 0 ? 1 : millis();
+
+  // Same song but a missing/garbled timing field: keep the last known values
+  // so the progress bar does not blink out for a poll.
+  if (next.track.length() > 0 && next.track == spotify.track) {
+    if (durationRaw.length() == 0 || next.durationMs <= 0) {
+      next.durationMs = spotify.durationMs;
+    }
+    if (progressRaw.length() == 0) {
+      uint32_t estimate = spotify.progressMs;
+      if (spotify.isPlaying && spotify.fetchedAt > 0) {
+        estimate += millis() - spotify.fetchedAt;
+      }
+      next.progressMs = estimate;
+    }
+  }
   if (next.track.length() > 0 || next.isPlaying || next.album.length() > 0) {
     next.linked = true;
   }
 
   // Between-track API gaps often return an empty item for a poll or two while
-  // audio is already on the next song. Keep the previous title/art instead of
-  // flashing "Nothing playing".
+  // audio is already on the next song. Keep the previous title/art through a
+  // short gap (or while the API still says playing), but after that fall back
+  // to "Nothing playing".
+  next.emptyPolls = 0;
   if (next.track.length() == 0 && spotify.track.length() > 0 &&
-      (next.isPlaying || spotify.isPlaying)) {
+      (next.isPlaying || spotify.emptyPolls < 2)) {
+    next.emptyPolls = next.isPlaying ? 0 : spotify.emptyPolls + 1;
     next.track = spotify.track;
     next.artists = spotify.artists;
     next.album = spotify.album;
@@ -466,14 +612,17 @@ bool fetchSpotify(DeskSpotify& spotify) {
       const int expectedBytes = artWidth * artHeight * 2;
       const int reportedBytes =
           extractJsonScalar(response, "bytes", artStart).toInt();
-      const String base64 = extractJsonScalar(response, "base64", artStart);
+      int b64Start = -1;
+      int b64Len = 0;
       uint8_t* raw = nullptr;
       size_t rawLen = 0;
       if (format == "rgb565" && artWidth > 0 && artHeight > 0 &&
           artWidth <= 64 && artHeight <= 64 && expectedBytes > 0 &&
           expectedBytes <= static_cast<int>(SPOTIFY_ART_MAX_BYTES) &&
           (reportedBytes == 0 || reportedBytes == expectedBytes) &&
-          base64.length() > 0 && decodeBase64(base64, raw, rawLen) &&
+          findJsonStringRange(response, "base64", artStart, b64Start, b64Len) &&
+          decodeBase64Slice(response.c_str() + b64Start,
+                            static_cast<size_t>(b64Len), raw, rawLen) &&
           rawLen >= static_cast<size_t>(expectedBytes)) {
         artPixels = reinterpret_cast<uint16_t*>(raw);
       } else if (raw != nullptr) {
@@ -494,14 +643,9 @@ bool fetchSpotify(DeskSpotify& spotify) {
     next.artPixels = artPixels;
     next.artWidth = artWidth;
     next.artHeight = artHeight;
-  } else if (hasTrack && spotify.artPixels != nullptr) {
-    next.artPixels = spotify.artPixels;
-    next.artWidth = spotify.artWidth;
-    next.artHeight = spotify.artHeight;
-    spotify.artPixels = nullptr;
-    spotify.artWidth = 0;
-    spotify.artHeight = 0;
   } else {
+    // New track whose cover failed to decode: show the logo, never the old
+    // song's cover.
     if (artPixels != nullptr) {
       free(artPixels);
     }
@@ -575,106 +719,130 @@ void refreshSpotifyOnly(DeskData& data) {
   data.spotifyFetchedAt = millis() == 0 ? 1 : millis();
 }
 
-void refreshWeatherStocks(DeskData& data) {
-  DeskWeather weather = data.weather;
-  if (fetchWeather(weather)) {
-    data.weather = weather;
+namespace {
+// One stock quote per call so a full 1-minute market refresh never blocks the
+// main loop for more than a single request.
+uint8_t stockStep = 0;
+
+uint32_t stampNow() { return millis() == 0 ? 1 : millis(); }
+
+// Day key (year * 1000 + day-of-year) from the NTP clock; 0 if time unknown.
+uint32_t currentDayKey() {
+  const time_t now = time(nullptr);
+  if (now < 100000) {
+    return 0;
   }
+  struct tm localTime = {};
+  localtime_r(&now, &localTime);
+  return static_cast<uint32_t>(localTime.tm_year + 1900) * 1000UL +
+         static_cast<uint32_t>(localTime.tm_yday + 1);
+}
+
+void refreshWeatherNow(DeskData& data) {
+  DeskWeather weather = data.weather;
+  const bool ok = fetchWeather(weather);
+  if (ok) {
+    data.weather = weather;
+    data.weatherFetchedAt = stampNow();
+  } else {
+    // Failed: retry in WEATHER_RETRY_MS instead of waiting a full interval.
+    data.weatherFetchedAt =
+        stampNow() - (WEATHER_REFRESH_MS - WEATHER_RETRY_MS);
+  }
+}
+
+void refreshMealsNow(DeskData& data) {
+  DeskMeals meals = data.meals;
+  if (fetchMeals(meals)) {
+    data.meals = meals;
+    data.mealsDayKey = currentDayKey();
+  }
+  data.mealsFetchedAt = stampNow();
+}
+
+void refreshHeadlinesNow(DeskData& data) {
+  fetchHeadlines(data);
+  data.headlinesFetchedAt = stampNow();
+}
+
+void refreshStocksNow(DeskData& data) {
   for (uint8_t index = 0; index < DESK_STOCK_COUNT; ++index) {
     DeskStock stock = data.stocks[index];
     if (fetchStock(stock)) {
       data.stocks[index] = stock;
     }
   }
-  data.weatherStocksFetchedAt = millis() == 0 ? 1 : millis();
+  data.stocksFetchedAt = stampNow();
+  stockStep = 0;
 }
 
-// Incremental market refresh so Desk Mode can poll buttons between requests.
-uint8_t weatherStockStep = 0;
+void refreshStocksStep(DeskData& data) {
+  const uint8_t index = stockStep;
+  DeskStock stock = data.stocks[index];
+  if (fetchStock(stock)) {
+    data.stocks[index] = stock;
+  }
+  ++stockStep;
+  if (stockStep >= DESK_STOCK_COUNT) {
+    stockStep = 0;
+    data.stocksFetchedAt = stampNow();
+  }
+}
 
-bool refreshWeatherStocksStep(DeskData& data) {
-  if (weatherStockStep == 0) {
-    DeskWeather weather = data.weather;
-    if (fetchWeather(weather)) {
-      data.weather = weather;
-    }
-    weatherStockStep = 1;
+bool mealsDue(const DeskData& data) {
+  if (data.mealsFetchedAt == 0) {
     return true;
   }
-  if (weatherStockStep <= DESK_STOCK_COUNT) {
-    const uint8_t index = weatherStockStep - 1;
-    DeskStock stock = data.stocks[index];
-    if (fetchStock(stock)) {
-      data.stocks[index] = stock;
-    }
-    ++weatherStockStep;
-    if (weatherStockStep > DESK_STOCK_COUNT) {
-      weatherStockStep = 0;
-      data.weatherStocksFetchedAt = millis() == 0 ? 1 : millis();
-    }
-    return true;
+  const uint32_t dayKey = currentDayKey();
+  if (dayKey != 0 && dayKey != data.mealsDayKey) {
+    // New day (or the last fetch failed): pull, but back off between retries.
+    return refreshDue(data.mealsFetchedAt, MEALS_RETRY_MS, false);
   }
-  weatherStockStep = 0;
   return false;
 }
+}  // namespace
 
+// Everything is polled from the main loop. Spotify every 4s, stocks every 1
+// minute, weather every 5 minutes, headlines every 15 minutes, meals only on
+// entering Desk Mode and when the day changes. Non-forced calls do at most one
+// HTTP request so the caller can keep reading buttons between requests.
 void refreshDeskData(DeskData& data, bool force) {
   if (!waitForWiFi()) {
     return;
   }
   initDeskClock();
 
-  const uint32_t spotifyInterval =
-      data.spotify.isPlaying ? SPOTIFY_PLAYING_REFRESH_MS : SPOTIFY_REFRESH_MS;
-
   if (force) {
-    weatherStockStep = 0;
-    if (refreshDue(data.weatherStocksFetchedAt, WEATHER_STOCK_REFRESH_MS,
-                   true)) {
-      refreshWeatherStocks(data);
-    }
-    if (refreshDue(data.mealsFetchedAt, MEALS_REFRESH_MS, true)) {
-      DeskMeals meals = data.meals;
-      if (fetchMeals(meals)) {
-        data.meals = meals;
-      }
-      data.mealsFetchedAt = millis() == 0 ? 1 : millis();
-    }
-    if (refreshDue(data.headlinesFetchedAt, HEADLINES_REFRESH_MS, true)) {
-      fetchHeadlines(data);
-      data.headlinesFetchedAt = millis() == 0 ? 1 : millis();
-    }
-    if (refreshDue(data.spotifyFetchedAt, spotifyInterval, true)) {
-      refreshSpotifyOnly(data);
-    }
-    return;
-  }
-
-  // Background refresh: at most one HTTP feed per call so buttons stay
-  // responsive between Spotify / weather / stock requests.
-  if (weatherStockStep != 0) {
-    refreshWeatherStocksStep(data);
-    return;
-  }
-  if (refreshDue(data.spotifyFetchedAt, spotifyInterval, false)) {
+    stockStep = 0;
+    refreshWeatherNow(data);
+    refreshStocksNow(data);
+    refreshMealsNow(data);
+    refreshHeadlinesNow(data);
     refreshSpotifyOnly(data);
     return;
   }
-  if (refreshDue(data.weatherStocksFetchedAt, WEATHER_STOCK_REFRESH_MS,
-                 false)) {
-    refreshWeatherStocksStep(data);
+
+  if (refreshDue(data.spotifyFetchedAt, SPOTIFY_REFRESH_MS, false)) {
+    refreshSpotifyOnly(data);
     return;
   }
-  if (refreshDue(data.mealsFetchedAt, MEALS_REFRESH_MS, false)) {
-    DeskMeals meals = data.meals;
-    if (fetchMeals(meals)) {
-      data.meals = meals;
-    }
-    data.mealsFetchedAt = millis() == 0 ? 1 : millis();
+  if (stockStep != 0) {
+    refreshStocksStep(data);
+    return;
+  }
+  if (refreshDue(data.stocksFetchedAt, STOCKS_REFRESH_MS, false)) {
+    refreshStocksStep(data);
+    return;
+  }
+  if (refreshDue(data.weatherFetchedAt, WEATHER_REFRESH_MS, false)) {
+    refreshWeatherNow(data);
+    return;
+  }
+  if (mealsDue(data)) {
+    refreshMealsNow(data);
     return;
   }
   if (refreshDue(data.headlinesFetchedAt, HEADLINES_REFRESH_MS, false)) {
-    fetchHeadlines(data);
-    data.headlinesFetchedAt = millis() == 0 ? 1 : millis();
+    refreshHeadlinesNow(data);
   }
 }

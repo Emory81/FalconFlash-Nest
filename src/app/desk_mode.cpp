@@ -71,9 +71,16 @@ bool markFinishedSpotifyTrack(DeskSpotify& spotify) {
   return true;
 }
 
-void drawSpotifyProgress(TFT_eSPI& display, const DeskSpotify& spotify) {
-  if (!spotifyHasTrack(spotify) || !spotify.isPlaying ||
-      spotify.durationMs == 0) {
+// Bar shows for any known track: it advances while playing, freezes while
+// paused, and stays full after the song ends until the next one starts.
+bool spotifyShowsBar(const DeskSpotify& spotify) {
+  return spotifyHasTrack(spotify) && spotify.durationMs > 0;
+}
+
+void drawSpotifyProgress(TFT_eSPI& display, const DeskSpotify& spotify,
+                         int16_t& lastFillW) {
+  if (!spotifyShowsBar(spotify)) {
+    lastFillW = -1;
     return;
   }
   const int16_t barX = SPOTIFY_ART_X + SPOTIFY_ART_SIZE + 10;
@@ -81,10 +88,14 @@ void drawSpotifyProgress(TFT_eSPI& display, const DeskSpotify& spotify) {
   const uint32_t progressMs = spotifyProgressMs(spotify);
   const int16_t fillW = static_cast<int16_t>(
       (static_cast<uint32_t>(barW) * progressMs) / spotify.durationMs);
+  if (fillW == lastFillW) {
+    return;
+  }
   display.fillRoundRect(barX, SPOTIFY_BAR_Y, barW, 6, 3, TFT_DARKGREY);
   if (fillW > 0) {
     display.fillRoundRect(barX, SPOTIFY_BAR_Y, fillW, 6, 3, SPOTIFY_GREEN);
   }
+  lastFillW = fillW;
 }
 
 bool spotifyLogoReady(const GameAssetImage& logo) {
@@ -122,7 +133,7 @@ void maskRoundedCorners(TFT_eSPI& display, int16_t x, int16_t y, int16_t w,
 
 // RGB565 art must be blitted to the 16-bit display after the 8-bit sprite.
 void pushSpotifyArtSlot(TFT_eSPI& display, const DeskSpotify& spotify,
-                        const GameAssetImage& logo) {
+                        const GameAssetImage& logo, uint16_t panelColor) {
   if (spotifyHasCover(spotify)) {
     const int16_t drawX =
         SPOTIFY_ART_X + (SPOTIFY_ART_SIZE - spotify.artWidth) / 2;
@@ -133,10 +144,12 @@ void pushSpotifyArtSlot(TFT_eSPI& display, const DeskSpotify& spotify,
                       spotify.artPixels);
     display.setSwapBytes(false);
     maskRoundedCorners(display, drawX, drawY, spotify.artWidth,
-                       spotify.artHeight, SPOTIFY_ART_RADIUS, DESK_PANEL);
+                       spotify.artHeight, SPOTIFY_ART_RADIUS, panelColor);
     return;
   }
 
+  display.fillRect(SPOTIFY_ART_X, SPOTIFY_ART_Y, SPOTIFY_ART_SIZE,
+                   SPOTIFY_ART_SIZE, panelColor);
   if (!spotifyLogoReady(logo)) {
     return;
   }
@@ -153,8 +166,19 @@ void pushSpotifyArtSlot(TFT_eSPI& display, const DeskSpotify& spotify,
   display.setSwapBytes(false);
 }
 
+void drawTinyLockIcon(TFT_eSPI& canvas, int16_t x, int16_t y, uint16_t color) {
+  // Shackle (10x11 padlock anchored at top-left x, y)
+  canvas.drawFastHLine(x + 3, y, 4, color);
+  canvas.drawFastVLine(x + 2, y + 1, 3, color);
+  canvas.drawFastVLine(x + 7, y + 1, 3, color);
+  // Lock body
+  canvas.fillRoundRect(x, y + 4, 10, 7, 2, color);
+  // Keyhole
+  canvas.fillRect(x + 4, y + 6, 2, 3, DESK_BG);
+}
+
 void drawHeader(TFT_eSPI& canvas, const char* title, uint8_t page,
-                bool showHints) {
+                bool showHints, bool pageLocked) {
   canvas.fillRect(0, 0, canvas.width(), canvas.height(), DESK_BG);
   canvas.setTextFont(1);
   if (title != nullptr && title[0] != '\0') {
@@ -174,8 +198,13 @@ void drawHeader(TFT_eSPI& canvas, const char* title, uint8_t page,
     canvas.setTextSize(1);
     canvas.setTextDatum(BC_DATUM);
     canvas.setTextColor(DESK_SUBTEXT, DESK_BG);
-    canvas.drawString("BTN1/2 Pages                         BTN4 Off",
+    canvas.drawString(pageLocked ? "BTN1 Unlock      BTN4 Off"
+                                 : "BTN1 Lock        BTN4 Off",
                       canvas.width() / 2, canvas.height() - 5);
+    if (pageLocked) {
+      drawTinyLockIcon(canvas, canvas.width() - 18, canvas.height() - 15,
+                       DESK_ACCENT);
+    }
   }
 }
 
@@ -251,8 +280,82 @@ void drawCloud(TFT_eSPI& canvas, int16_t x, int16_t y,
   canvas.fillRoundRect(x - 16, y + 1, 33, 11, 5, color);
 }
 
-void drawWeatherIcon(TFT_eSPI& canvas, DeskWeatherIcon icon, int16_t x,
-                     int16_t y) {
+void drawMoon(TFT_eSPI& canvas, int16_t x, int16_t y, int16_t radius,
+              uint16_t bg) {
+  constexpr uint16_t MOON_COLOR = 0xF79E;  // Soft warm moonlight
+  canvas.fillCircle(x, y, radius, MOON_COLOR);
+  const int16_t cutOffsetX = radius / 2 + 1;
+  const int16_t cutOffsetY = radius / 3;
+  canvas.fillCircle(x + cutOffsetX, y - cutOffsetY, radius - 1, bg);
+}
+
+void drawStar(TFT_eSPI& canvas, int16_t x, int16_t y, bool bright = false) {
+  constexpr uint16_t STAR_COLOR = 0xFFE8;
+  if (bright) {
+    canvas.drawFastHLine(x - 2, y, 5, STAR_COLOR);
+    canvas.drawFastVLine(x, y - 2, 5, STAR_COLOR);
+  } else {
+    canvas.drawFastHLine(x - 1, y, 3, STAR_COLOR);
+    canvas.drawFastVLine(x, y - 1, 3, STAR_COLOR);
+  }
+}
+
+void drawWeatherIcon(TFT_eSPI& canvas, DeskWeatherIcon icon, bool isNight,
+                     int16_t x, int16_t y, uint16_t bg) {
+  constexpr uint16_t NIGHT_CLOUD = 0x7BEF;
+  constexpr uint16_t NIGHT_SNOW_CLOUD = 0x9CF3;
+  constexpr uint16_t NIGHT_FOG_CLOUD = 0x6B4D;
+  constexpr uint16_t NIGHT_STORM_CLOUD = 0x4208;
+
+  if (isNight) {
+    switch (icon) {
+      case DeskWeatherIcon::Sun:
+        drawMoon(canvas, x - 2, y, 11, bg);
+        drawStar(canvas, x + 12, y - 9, true);
+        drawStar(canvas, x + 15, y + 3, false);
+        drawStar(canvas, x - 15, y - 10, false);
+        return;
+      case DeskWeatherIcon::Cloud:
+        drawMoon(canvas, x + 10, y - 9, 7, bg);
+        drawStar(canvas, x - 14, y - 11, false);
+        drawCloud(canvas, x - 2, y + 2, NIGHT_CLOUD);
+        return;
+      case DeskWeatherIcon::Rain:
+        drawMoon(canvas, x + 11, y - 12, 6, bg);
+        drawCloud(canvas, x - 1, y - 3, NIGHT_CLOUD);
+        for (int16_t offset = -10; offset <= 10; offset += 10) {
+          canvas.drawLine(x + offset, y + 11, x + offset - 3, y + 18,
+                          TFT_CYAN);
+        }
+        return;
+      case DeskWeatherIcon::Snow:
+        drawMoon(canvas, x + 11, y - 12, 6, bg);
+        drawStar(canvas, x - 15, y - 11, false);
+        drawCloud(canvas, x - 1, y - 3, NIGHT_SNOW_CLOUD);
+        for (int16_t offset = -10; offset <= 10; offset += 10) {
+          canvas.drawCircle(x + offset, y + 14, 2, TFT_WHITE);
+        }
+        return;
+      case DeskWeatherIcon::Fog:
+        drawMoon(canvas, x + 10, y - 11, 6, bg);
+        drawCloud(canvas, x - 1, y - 4, NIGHT_FOG_CLOUD);
+        canvas.drawFastHLine(x - 16, y + 10, 32, NIGHT_CLOUD);
+        canvas.drawFastHLine(x - 12, y + 15, 24, NIGHT_FOG_CLOUD);
+        return;
+      case DeskWeatherIcon::Storm:
+        drawMoon(canvas, x + 12, y - 12, 5, bg);
+        drawCloud(canvas, x - 1, y - 4, NIGHT_STORM_CLOUD);
+        canvas.fillTriangle(x + 1, y + 6, x - 5, y + 16, x + 1, y + 14,
+                            TFT_YELLOW);
+        canvas.fillTriangle(x + 1, y + 14, x - 1, y + 22, x + 7, y + 11,
+                            TFT_YELLOW);
+        canvas.drawLine(x - 11, y + 11, x - 14, y + 17, TFT_CYAN);
+        return;
+      default:
+        break;
+    }
+  }
+
   switch (icon) {
     case DeskWeatherIcon::Sun:
       drawSun(canvas, x, y);
@@ -286,7 +389,7 @@ void drawWeatherIcon(TFT_eSPI& canvas, DeskWeatherIcon icon, int16_t x,
       break;
     default:
       canvas.setTextSize(2);
-      canvas.setTextColor(TFT_WHITE, DESK_BG);
+      canvas.setTextColor(TFT_WHITE, bg);
       canvas.setTextDatum(MC_DATUM);
       canvas.drawString("?", x, y);
       break;
@@ -347,7 +450,7 @@ void drawSpotifyWidget(TFT_eSPI& canvas, const DeskSpotify& spotify,
                   textX, SPOTIFY_PANEL_Y + 40, textWidth, 1, DESK_SUBTEXT,
                   DESK_PANEL);
 
-  if (!spotify.isPlaying || spotify.durationMs == 0) {
+  if (!spotifyShowsBar(spotify)) {
     return;
   }
   const uint32_t progressMs = spotifyProgressMs(spotify);
@@ -383,7 +486,7 @@ void drawWeatherBlock(TFT_eSPI& canvas, const DeskWeather& weather, uint16_t bg,
                       uint16_t fg, uint16_t sub) {
   canvas.fillRect(0, 80, canvas.width(), SPOTIFY_PANEL_Y - 80, bg);
   const int16_t centerX = canvas.width() / 2;
-  drawWeatherIcon(canvas, weather.icon, centerX - 48, 98);
+  drawWeatherIcon(canvas, weather.icon, weather.isNight, centerX - 48, 98, bg);
   canvas.setTextDatum(ML_DATUM);
   if (weather.valid) {
     char temperature[16];
@@ -404,8 +507,8 @@ void drawWeatherBlock(TFT_eSPI& canvas, const DeskWeather& weather, uint16_t bg,
 }
 
 void drawClockWeather(TFT_eSPI& canvas, const DeskData& data, bool showHints,
-                      const GameAssetImage& spotifyLogo) {
-  drawHeader(canvas, "", 0, showHints);
+                      bool pageLocked, const GameAssetImage& spotifyLogo) {
+  drawHeader(canvas, "", 0, showHints, pageLocked);
   char timeText[16] = "--:--";
   char dateText[24] = "Syncing time...";
   formatDeskTime(timeText, sizeof(timeText), dateText, sizeof(dateText));
@@ -414,8 +517,9 @@ void drawClockWeather(TFT_eSPI& canvas, const DeskData& data, bool showHints,
   drawSpotifyWidget(canvas, data.spotify, spotifyLogo);
 }
 
-void drawStocks(TFT_eSPI& canvas, const DeskData& data, bool showHints) {
-  drawHeader(canvas, "Markets", 1, showHints);
+void drawStocks(TFT_eSPI& canvas, const DeskData& data, bool showHints,
+                bool pageLocked) {
+  drawHeader(canvas, "Markets", 1, showHints, pageLocked);
   for (uint8_t index = 0; index < DESK_STOCK_COUNT; ++index) {
     const int16_t column = index % 2;
     const int16_t row = index / 2;
@@ -448,8 +552,9 @@ void drawStocks(TFT_eSPI& canvas, const DeskData& data, bool showHints) {
   }
 }
 
-void drawMeals(TFT_eSPI& canvas, const DeskData& data, bool showHints) {
-  drawHeader(canvas, "Lottie Meals", 2, showHints);
+void drawMeals(TFT_eSPI& canvas, const DeskData& data, bool showHints,
+               bool pageLocked) {
+  drawHeader(canvas, "Lottie Meals", 2, showHints, pageLocked);
   if (!data.meals.valid) {
     canvas.setTextDatum(MC_DATUM);
     canvas.setTextSize(2);
@@ -485,8 +590,9 @@ void drawMeals(TFT_eSPI& canvas, const DeskData& data, bool showHints) {
   }
 }
 
-void drawHeadlines(TFT_eSPI& canvas, const DeskData& data, bool showHints) {
-  drawHeader(canvas, "Latest Headlines", 3, showHints);
+void drawHeadlines(TFT_eSPI& canvas, const DeskData& data, bool showHints,
+                   bool pageLocked) {
+  drawHeader(canvas, "Latest Headlines", 3, showHints, pageLocked);
   if (data.headlineCount == 0) {
     canvas.setTextDatum(MC_DATUM);
     canvas.setTextSize(2);
@@ -508,19 +614,20 @@ void drawHeadlines(TFT_eSPI& canvas, const DeskData& data, bool showHints) {
 }
 
 void drawPage(TFT_eSPI& canvas, const DeskData& data, uint8_t page,
-              bool showHints, const GameAssetImage& spotifyLogo) {
+              bool showHints, bool pageLocked,
+              const GameAssetImage& spotifyLogo) {
   switch (page) {
     case 0:
-      drawClockWeather(canvas, data, showHints, spotifyLogo);
+      drawClockWeather(canvas, data, showHints, pageLocked, spotifyLogo);
       break;
     case 1:
-      drawStocks(canvas, data, showHints);
+      drawStocks(canvas, data, showHints, pageLocked);
       break;
     case 2:
-      drawMeals(canvas, data, showHints);
+      drawMeals(canvas, data, showHints, pageLocked);
       break;
     default:
-      drawHeadlines(canvas, data, showHints);
+      drawHeadlines(canvas, data, showHints, pageLocked);
       break;
   }
 }
@@ -539,77 +646,6 @@ void drawLoading(TFT_eSPI& display) {
                      display.width() / 2, display.height() / 2 + 18);
 }
 
-// Network refresh runs on a worker so the UI loop can always poll buttons.
-DeskData* deskRefreshData = nullptr;
-SemaphoreHandle_t deskDataMutex = nullptr;
-TaskHandle_t deskRefreshTaskHandle = nullptr;
-volatile bool deskRefreshTaskRunning = false;
-
-void deskRefreshTask(void* /*param*/) {
-  while (deskRefreshTaskRunning && deskRefreshData != nullptr &&
-         deskDataMutex != nullptr) {
-    if (xSemaphoreTake(deskDataMutex, pdMS_TO_TICKS(100)) == pdTRUE) {
-      if (markFinishedSpotifyTrack(deskRefreshData->spotify)) {
-        // Poll ASAP for the next song instead of sitting on a blank state.
-        deskRefreshData->spotifyFetchedAt = 0;
-      }
-      refreshDeskData(*deskRefreshData, false);
-      xSemaphoreGive(deskDataMutex);
-    }
-    vTaskDelay(pdMS_TO_TICKS(50));
-  }
-  deskRefreshTaskHandle = nullptr;
-  vTaskDelete(nullptr);
-}
-
-bool startDeskRefreshTask(DeskData& data) {
-  if (deskRefreshTaskRunning) {
-    return true;
-  }
-  if (deskDataMutex == nullptr) {
-    deskDataMutex = xSemaphoreCreateMutex();
-  }
-  if (deskDataMutex == nullptr) {
-    return false;
-  }
-  deskRefreshData = &data;
-  deskRefreshTaskRunning = true;
-  const BaseType_t created = xTaskCreatePinnedToCore(
-      deskRefreshTask, "desk_refresh", 12288, nullptr, 1,
-      &deskRefreshTaskHandle, 0);
-  if (created != pdPASS) {
-    deskRefreshTaskHandle = nullptr;
-    deskRefreshTaskRunning = false;
-    deskRefreshData = nullptr;
-    return false;
-  }
-  return true;
-}
-
-void stopDeskRefreshTask() {
-  deskRefreshTaskRunning = false;
-  uint32_t waited = 0;
-  while (deskRefreshTaskHandle != nullptr && waited < 3000) {
-    delay(20);
-    waited += 20;
-  }
-  if (deskRefreshTaskHandle != nullptr) {
-    vTaskDelete(deskRefreshTaskHandle);
-    deskRefreshTaskHandle = nullptr;
-  }
-  deskRefreshData = nullptr;
-}
-
-bool lockDeskData(TickType_t ticks = pdMS_TO_TICKS(50)) {
-  return deskDataMutex == nullptr ||
-         xSemaphoreTake(deskDataMutex, ticks) == pdTRUE;
-}
-
-void unlockDeskData() {
-  if (deskDataMutex != nullptr) {
-    xSemaphoreGive(deskDataMutex);
-  }
-}
 }  // namespace
 
 void runDeskMode(TFT_eSPI& display) {
@@ -623,20 +659,23 @@ void runDeskMode(TFT_eSPI& display) {
   DeskData data;
   initDeskClock();
   refreshDeskData(data, true);
-  const bool backgroundRefresh = startDeskRefreshTask(data);
-
   TFT_eSprite frame(&display);
   frame.setColorDepth(8);
-  const bool useSprite =
-      frame.createSprite(display.width(), display.height()) != nullptr;
+  // Allocate the 76.8 KB 8-bit frame buffer only during a full page draw and
+  // free it right after pushing, so HTTPS/TLS polls always have enough heap.
+  bool lastUsedSprite = false;
   uint8_t page = 0;
   uint32_t nextPageAt = millis() + PAGE_ROTATE_MS;
   uint32_t nextFrameAt = 0;
-  uint32_t nextFullRedrawAt = 0;
   uint32_t lastInteractionAt = millis();
   bool showHints = true;
+  bool pageLocked = false;
   bool pageDirty = true;
   bool spotifyArtDirty = true;
+  int16_t lastSpotifyFillW = -1;
+  uint32_t lastStocksFetchedAt = data.stocksFetchedAt;
+  uint32_t lastMealsFetchedAt = data.mealsFetchedAt;
+  uint32_t lastHeadlinesFetchedAt = data.headlinesFetchedAt;
   String lastSpotifyTrack;
   String lastSpotifyArtists;
   bool lastSpotifyPlaying = false;
@@ -648,6 +687,7 @@ void runDeskMode(TFT_eSPI& display) {
   bool lastWeatherValid = false;
   int16_t lastWeatherTemp = 0;
   DeskWeatherIcon lastWeatherIcon = DeskWeatherIcon::Unknown;
+  bool lastWeatherNight = false;
   String lastWeatherCondition;
 
   while (true) {
@@ -663,44 +703,31 @@ void runDeskMode(TFT_eSPI& display) {
     }
     if (button == Button::Button4) {
       waitForButtonRelease();
-      stopDeskRefreshTask();
       frame.deleteSprite();
       spotifyLogo.release();
       releaseDeskSpotifyArt(data.spotify);
       return;
     }
     if (button == Button::Button1) {
-      page = page == 0 ? PAGE_COUNT - 1 : page - 1;
-      nextPageAt = millis() + PAGE_ROTATE_MS;
-      pageDirty = true;
-      spotifyArtDirty = true;
-    } else if (button == Button::Button2) {
-      page = (page + 1) % PAGE_COUNT;
-      nextPageAt = millis() + PAGE_ROTATE_MS;
-      pageDirty = true;
-      spotifyArtDirty = true;
-    }
-
-    if (millis() >= nextPageAt) {
-      page = (page + 1) % PAGE_COUNT;
-      nextPageAt = millis() + PAGE_ROTATE_MS;
-      pageDirty = true;
-      spotifyArtDirty = true;
-    }
-
-    if (!backgroundRefresh) {
-      // Fallback if the worker could not start.
-      if (markFinishedSpotifyTrack(data.spotify)) {
-        data.spotifyFetchedAt = 0;
+      pageLocked = !pageLocked;
+      if (!pageLocked) {
+        nextPageAt = millis() + PAGE_ROTATE_MS;
       }
-      refreshDeskData(data);
+      pageDirty = true;
+    }
+    if (!pageLocked && millis() >= nextPageAt) {
+      page = (page + 1) % PAGE_COUNT;
+      nextPageAt = millis() + PAGE_ROTATE_MS;
+      pageDirty = true;
+      spotifyArtDirty = true;
     }
 
-    if (!lockDeskData()) {
-      // Worker is mid-refresh; keep polling buttons and try drawing next loop.
-      delay(10);
-      continue;
+    // All polling happens here on the main loop, one HTTP request per pass.
+    if (markFinishedSpotifyTrack(data.spotify)) {
+      // Song ended locally: pull the next one right away.
+      data.spotifyFetchedAt = 0;
     }
+    refreshDeskData(data);
 
     if (markFinishedSpotifyTrack(data.spotify)) {
       data.spotifyFetchedAt = 0;
@@ -725,40 +752,58 @@ void runDeskMode(TFT_eSPI& display) {
       spotifyArtDirty = true;
     }
 
-    const bool needsFullRedraw =
-        pageDirty || (page != 0 && millis() >= nextFullRedrawAt);
+    if (page == 1 && data.stocksFetchedAt != lastStocksFetchedAt) {
+      lastStocksFetchedAt = data.stocksFetchedAt;
+      pageDirty = true;
+    } else if (page == 2 && data.mealsFetchedAt != lastMealsFetchedAt) {
+      lastMealsFetchedAt = data.mealsFetchedAt;
+      pageDirty = true;
+    } else if (page == 3 &&
+               data.headlinesFetchedAt != lastHeadlinesFetchedAt) {
+      lastHeadlinesFetchedAt = data.headlinesFetchedAt;
+      pageDirty = true;
+    }
+
     if (millis() >= nextFrameAt) {
-      if (needsFullRedraw) {
-        if (useSprite) {
-          drawPage(frame, data, page, showHints, spotifyLogo);
+      if (pageDirty) {
+        if (frame.createSprite(display.width(), display.height()) != nullptr) {
+          drawPage(frame, data, page, showHints, pageLocked, spotifyLogo);
           frame.pushSprite(0, 0);
+          frame.deleteSprite();
+          lastUsedSprite = true;
         } else {
-          drawPage(display, data, page, showHints, spotifyLogo);
+          drawPage(display, data, page, showHints, pageLocked, spotifyLogo);
+          lastUsedSprite = false;
         }
         if (page == 0) {
           // Full page redraw clears the art slot; restore once.
-          pushSpotifyArtSlot(display, data.spotify, spotifyLogo);
+          const uint16_t panelColor =
+              lastUsedSprite ? spriteScreenColor(display, DESK_PANEL)
+                             : DESK_PANEL;
+          pushSpotifyArtSlot(display, data.spotify, spotifyLogo, panelColor);
           lastDrawnArt = desiredArt;
           spotifyArtDirty = false;
+          lastSpotifyFillW = -1;
           formatDeskTime(lastTimeText, sizeof(lastTimeText), lastDateText,
                          sizeof(lastDateText));
           lastWeatherValid = data.weather.valid;
           lastWeatherTemp = data.weather.temperatureF;
           lastWeatherIcon = data.weather.icon;
+          lastWeatherNight = data.weather.isNight;
           lastWeatherCondition = data.weather.condition;
         }
         pageDirty = false;
-        nextFullRedrawAt = millis() + FRAME_MS;
       } else if (page == 0) {
         char timeText[16] = "--:--";
         char dateText[24] = "Syncing time...";
         formatDeskTime(timeText, sizeof(timeText), dateText, sizeof(dateText));
         const uint16_t patchBg =
-            useSprite ? spriteScreenColor(display, DESK_BG) : DESK_BG;
+            lastUsedSprite ? spriteScreenColor(display, DESK_BG) : DESK_BG;
         const uint16_t patchFg =
-            useSprite ? spriteScreenColor(display, TFT_WHITE) : TFT_WHITE;
+            lastUsedSprite ? spriteScreenColor(display, TFT_WHITE) : TFT_WHITE;
         const uint16_t patchSub =
-            useSprite ? spriteScreenColor(display, DESK_SUBTEXT) : DESK_SUBTEXT;
+            lastUsedSprite ? spriteScreenColor(display, DESK_SUBTEXT)
+                           : DESK_SUBTEXT;
         if (strcmp(timeText, lastTimeText) != 0 ||
             strcmp(dateText, lastDateText) != 0) {
           drawTimeBlock(display, timeText, dateText, patchBg, patchFg,
@@ -771,23 +816,27 @@ void runDeskMode(TFT_eSPI& display) {
         if (data.weather.valid != lastWeatherValid ||
             data.weather.temperatureF != lastWeatherTemp ||
             data.weather.icon != lastWeatherIcon ||
+            data.weather.isNight != lastWeatherNight ||
             data.weather.condition != lastWeatherCondition) {
           drawWeatherBlock(display, data.weather, patchBg, patchFg, patchSub);
           lastWeatherValid = data.weather.valid;
           lastWeatherTemp = data.weather.temperatureF;
           lastWeatherIcon = data.weather.icon;
+          lastWeatherNight = data.weather.isNight;
           lastWeatherCondition = data.weather.condition;
         }
         if (spotifyArtDirty) {
-          pushSpotifyArtSlot(display, data.spotify, spotifyLogo);
+          const uint16_t panelColor =
+              lastUsedSprite ? spriteScreenColor(display, DESK_PANEL)
+                             : DESK_PANEL;
+          pushSpotifyArtSlot(display, data.spotify, spotifyLogo, panelColor);
           lastDrawnArt = desiredArt;
           spotifyArtDirty = false;
         }
-        drawSpotifyProgress(display, data.spotify);
+        drawSpotifyProgress(display, data.spotify, lastSpotifyFillW);
       }
       nextFrameAt = millis() + FRAME_MS;
     }
-    unlockDeskData();
     delay(10);
   }
 }

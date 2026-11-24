@@ -1021,7 +1021,11 @@ bool fetchOrderStatus(const String& orderId, OrderStatus& status) {
          status.canceledOrRefunded;
 }
 
-bool fetchAuthenticatedJson(const String& path, String& response) {
+bool fetchAuthenticatedJson(const String& path, String& response,
+                            int* httpStatusOut) {
+  if (httpStatusOut != nullptr) {
+    *httpStatusOut = 0;
+  }
   const String token = loadDeviceToken();
   if (token.length() == 0) {
     return false;
@@ -1030,6 +1034,9 @@ bool fetchAuthenticatedJson(const String& path, String& response) {
     return false;
   }
   const int httpStatus = getJson(path, token, response);
+  if (httpStatusOut != nullptr) {
+    *httpStatusOut = httpStatus;
+  }
   if (httpStatus == 401 || httpStatus == 403) {
     clearDeviceToken();
     return false;

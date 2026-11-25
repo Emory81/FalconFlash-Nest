@@ -602,6 +602,21 @@ void drawGround(TFT_eSPI& d, int16_t cameraX, int16_t screenH) {
   const int16_t last = min<int16_t>(level->tiles - 1, (cameraX + d.width()) / TILE);
   for (int16_t col = first; col <= last; ++col) {
     for (int16_t row = 0; row < MAX_ROWS; ++row) {
+      // Black outline on every side of a grass tile that is not touching
+      // another grass tile.
+      if (plainTile(col, row)) {
+        const int16_t x = col * TILE - cameraX;
+        const int16_t y = rowTop(row, screenH) - gCameraY;
+        if (!plainTile(col, row + 1)) d.drawFastHLine(x, y, TILE, TFT_BLACK);
+        if (!plainTile(col, row - 1)) {
+          d.drawFastHLine(x, y + TILE - 1, TILE, TFT_BLACK);
+        }
+        if (!plainTile(col - 1, row)) d.drawFastVLine(x, y, TILE, TFT_BLACK);
+        if (!plainTile(col + 1, row)) {
+          d.drawFastVLine(x + TILE - 1, y, TILE, TFT_BLACK);
+        }
+        continue;
+      }
       const int8_t arrow = arrowAt(col, row);
       if (arrow == ARROW_NONE) continue;
       drawScaled(d, col * TILE - cameraX, rowTop(row, screenH), 16, 16,

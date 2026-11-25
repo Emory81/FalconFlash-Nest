@@ -166,7 +166,8 @@ bool blocksJump(int16_t col, int16_t row) {
 // Boxes are half a tile (16 px) and float freely, so they use rectangle
 // collision instead of the tile grid. Plain boxes break when the bird bumps
 // them from below. Mystery boxes stay, darken and push an egg out of the top.
-// Eggs are the powerups (red: higher jump, blue: faster); now and then one is
+// Eggs: red refills the hearts, blue makes the bird faster for a while and
+// green gives an extra life; now and then one is
 // rotten: it hops and cracks open when the bird gets close, and a rat comes
 // out that chases the bird and bites.
 enum class BoxKind : uint8_t { Plain, Mystery, Nest };
@@ -186,6 +187,9 @@ struct Box {
 
 enum class EggState : uint8_t { None, Emerging, Idle, Hop, Open };
 
+// Red refills hearts, blue is a speed boost, green is an extra life.
+enum class EggKind : uint8_t { Red, Blue, Green };
+
 struct Egg {
   EggState state;
   float x;  // world x of the left side
@@ -194,7 +198,7 @@ struct Egg {
   float restY;  // top of the box it sits on
   uint8_t timer;
   bool rotten;  // cracks open into a rat instead of being a powerup
-  bool blue;    // blue = speed, red = jump
+  EggKind kind;
 };
 
 constexpr int16_t RAT_W = 24;
@@ -213,8 +217,8 @@ struct Rat {
 struct Status {
   int hp;
   uint32_t invulnUntil;
-  uint32_t jumpBoostUntil;
   uint32_t speedBoostUntil;
+  int lives;
 };
 
 constexpr int16_t EGG_SIZE = 16;
@@ -223,11 +227,11 @@ constexpr float EGG_HOP_VELOCITY = -5.5f;
 constexpr float EGG_TRIGGER_DIST = 44.0f;  // a rotten egg wakes at this distance
 constexpr uint8_t EGG_OPEN_TICKS = 25;  // the broken shell stays this long
 constexpr int ROTTEN_ONE_IN = 5;        // chance an egg is rotten
-constexpr uint32_t BOOST_MS = 10000;
-constexpr float BOOST_JUMP_FACTOR = 1.2f;
+constexpr uint32_t BOOST_MS = 20000;  // speed boost
 constexpr float BOOST_SPEED_FACTOR = 1.3f;
 constexpr float RAT_SPEED = 1.5f;
 constexpr int PLAYER_MAX_HP = 3;
+constexpr int START_LIVES = 10;
 constexpr uint32_t INVULN_MS = 1500;
 constexpr float HURT_KNOCKBACK = 3.5f;
 constexpr float HURT_POP = -5.0f;
@@ -443,11 +447,58 @@ void unstick(Player& p, int16_t screenH) {
   }
 }
 
+// Bits that fly off a breaking brick, in the brick's own colors.
+struct Particle {
+  float x;
+  float y;
+  float vx;
+  float vy;
+  uint16_t color;
+  uint8_t life;  // ticks left; 0 = unused
+};
+
+constexpr uint8_t MAX_PARTICLES = 32;
+constexpr uint8_t PARTICLES_PER_BRICK = 10;
+constexpr uint8_t PARTICLE_LIFE = 18;  // ticks, about half a second
+Particle particles[MAX_PARTICLES];
+
+void clearParticles() {
+  for (auto& q : particles) q.life = 0;
+}
+
+void burstBrick(const Box& b) {
+  uint8_t made = 0;
+  for (auto& q : particles) {
+    if (made == PARTICLES_PER_BRICK) break;
+    if (q.life > 0) continue;
+    uint16_t color = pgm_read_word(&sfbBox[random(sfbBoxWidth * sfbBoxHeight)]);
+    if (color == SFB_TRANSPARENT) color = TFT_BROWN;
+    q.x = b.x + random(b.w - 2);
+    q.y = b.y + random(b.h - 2);
+    q.vx = random(-30, 31) / 10.0f;
+    q.vy = random(-50, -9) / 10.0f;
+    q.color = color;
+    q.life = PARTICLE_LIFE + random(7);
+    ++made;
+  }
+}
+
+void updateParticles() {
+  for (auto& q : particles) {
+    if (q.life == 0) continue;
+    --q.life;
+    q.vy += GRAVITY;
+    q.x += q.vx;
+    q.y += q.vy;
+  }
+}
+
 // The bird bumped a box from below.
 void hitBox(Box& b) {
   if (b.kind == BoxKind::Nest) return;
   if (b.kind == BoxKind::Plain) {
     b.broken = true;
+    burstBrick(b);
     audioPlayTone(330, 40);
     return;
   }
@@ -462,7 +513,8 @@ void hitBox(Box& b) {
   e.vy = 0;
   e.timer = 0;
   e.rotten = random(ROTTEN_ONE_IN) == 0;
-  e.blue = random(2) == 0;
+  const long roll = random(5);  // red 40%, blue 40%, green 20%
+  e.kind = roll < 2 ? EggKind::Red : (roll < 4 ? EggKind::Blue : EggKind::Green);
   e.state = EggState::Emerging;
 }
 
@@ -661,7 +713,9 @@ void drawBoxesAndEggs(TFT_eSPI& d, int16_t cameraX) {
     if (e.state == EggState::None) continue;
     const int16_t ex = static_cast<int16_t>(e.x) - cameraX;
     if (ex + EGG_SIZE < 0 || ex > screenW) continue;
-    const uint16_t* art = e.blue ? sfbBlueEgg : sfbEgg;
+    const uint16_t* art = e.kind == EggKind::Blue    ? sfbBlueEgg
+                          : e.kind == EggKind::Green ? sfbGreenEgg
+                                                     : sfbEgg;
     if (e.state == EggState::Hop) art = sfbEggCracking;
     if (e.state == EggState::Open) art = sfbEggOpen;
     drawScaled(d, ex, static_cast<int16_t>(e.y) - EGG_SIZE, 16, 16, art, false,
@@ -698,9 +752,9 @@ void drawHeart(TFT_eSPI& d, int16_t x, int16_t y, uint16_t color) {
 
 struct Hud {
   uint32_t exitHeldMs;
-  uint32_t jumpLeftMs;
   uint32_t speedLeftMs;
   int hp;
+  int lives;
   bool blink;  // hide the bird this frame (just hurt)
   bool gliding;
   float sink;  // how far the bird is drawn below its feet line right now
@@ -735,6 +789,11 @@ void drawFrame(TFT_eSPI& d, const Player& p, const Gorilla* gorillas,
   drawGround(d, cameraX, screenH);
   drawBoxesAndEggs(d, cameraX);
   drawGoldEggs(d, cameraX, screenH);
+  for (const auto& q : particles) {
+    if (q.life == 0) continue;
+    d.fillRect(static_cast<int16_t>(q.x) - cameraX,
+               static_cast<int16_t>(q.y) - gCameraY, 3, 3, q.color);
+  }
 
   for (uint8_t i = 0; i < MAX_GORILLAS; ++i) {
     const Gorilla& g = gorillas[i];
@@ -787,8 +846,12 @@ void drawFrame(TFT_eSPI& d, const Player& p, const Gorilla* gorillas,
   const uint16_t* art = sfbBird;
   int16_t artW = 32;
   int16_t artH = 32;
-  if (p.ducking || hud.gliding) {
-    art = sfbDuck;  // crouching on the ground or in the air, and floating
+  if (hud.gliding) {
+    art = sfbDive;  // floating
+    artW = sfbDiveWidth;
+    artH = sfbDiveHeight;
+  } else if (p.ducking) {
+    art = sfbDuck;  // used on the ground and in the air
     artW = sfbDuckWidth;
     artH = sfbDuckHeight;
   } else if (!p.onGround) {
@@ -824,13 +887,17 @@ void drawFrame(TFT_eSPI& d, const Player& p, const Gorilla* gorillas,
     drawScaled(d, d.width() - 22 - d.textWidth(eggText), 18 + gCameraY, 16, 16,
                sfbGoldEgg, false, EGG_SIZE, 1);
   }
-  int16_t barY = 4;
-  if (hud.jumpLeftMs > 0) {
-    d.fillRect(4, barY, 42, 8, TFT_BLACK);
-    d.drawRect(4, barY, 42, 8, TFT_WHITE);
-    d.fillRect(6, barY + 2, 38 * hud.jumpLeftMs / BOOST_MS, 4, TFT_RED);
-    barY += 10;
+  // Lives left (top left).
+  {
+    char livesText[16];
+    snprintf(livesText, sizeof(livesText), "Lives %d", hud.lives);
+    d.setTextFont(1);
+    d.setTextSize(1);
+    d.setTextDatum(TL_DATUM);
+    d.setTextColor(TFT_WHITE, TFT_BLACK);
+    d.drawString(livesText, 4, 4);
   }
+  const int16_t barY = 16;
   if (hud.speedLeftMs > 0) {
     d.fillRect(4, barY, 42, 8, TFT_BLACK);
     d.drawRect(4, barY, 42, 8, TFT_WHITE);
@@ -951,10 +1018,11 @@ void updateGorillas(Gorilla* g, Player& p, int16_t screenH) {
 }
 
 void initObjects(int16_t screenH) {
+  clearParticles();
   for (auto& taken : goldTaken) taken = false;
   goldCount = 0;
   for (uint8_t i = 0; i < BOX_SLOTS; ++i) {
-    eggs[i] = {EggState::None, 0, 0, 0, 0, 0, false, false};
+    eggs[i] = {EggState::None, 0, 0, 0, 0, 0, false, EggKind::Red};
     rats[i] = {false, 0, 0, 0, true};
     if (i < level->boxCount) {
       const int16_t* spawn = level->boxes[i];
@@ -1071,12 +1139,14 @@ bool updateObjects(Player& p, Status& st, uint32_t now, int16_t screenH) {
           }
         } else if (p.x + PLAYER_W > e.x && p.x < e.x + EGG_SIZE &&
                    pBottom > e.y - EGG_SIZE && pTop < e.y) {
-          // Grabbed: the egg is the powerup.
+          // Grabbed.
           e.state = EggState::None;
-          if (e.blue) {
+          if (e.kind == EggKind::Blue) {
             st.speedBoostUntil = now + BOOST_MS;
+          } else if (e.kind == EggKind::Green) {
+            ++st.lives;
           } else {
-            st.jumpBoostUntil = now + BOOST_MS;
+            st.hp = PLAYER_MAX_HP;
           }
           audioPlayTone(1320, 60);
         }
@@ -1287,7 +1357,7 @@ void runSuperFlashyBirds(TFT_eSPI& display) {
   level = &LEVELS[levelIndex];
   initGorillas(gorillas, worldH);
   initObjects(worldH);
-  Status status = {PLAYER_MAX_HP, 0, 0, 0};
+  Status status = {PLAYER_MAX_HP, 0, 0, START_LIVES};
   float visualSink = BIRD_SINK;
 
   // Double-press detection: when a direction button is pressed again within
@@ -1412,8 +1482,7 @@ void runSuperFlashyBirds(TFT_eSPI& display) {
     // Jump (variable height) and gravity.
     if (p.onGround && now < jumpBufferUntil) {
       jumpBufferUntil = 0;
-      p.vy = now < status.jumpBoostUntil ? JUMP_VELOCITY * BOOST_JUMP_FACTOR
-                                          : JUMP_VELOCITY;
+      p.vy = JUMP_VELOCITY;
       p.onGround = false;
       audioPlayTone(660, 25);
     }
@@ -1451,24 +1520,30 @@ void runSuperFlashyBirds(TFT_eSPI& display) {
     if (fell) audioPlayTone(220, 120);
 
     updateGorillas(gorillas, p, worldH);
-    const bool levelDone = updateObjects(p, status, now, worldH);
+    updateParticles();
+    bool levelDone = updateObjects(p, status, now, worldH);
+    bool gameOver = false;
     if (fell || status.hp <= 0) {
-      respawn(p, worldH);
-      initGorillas(gorillas, worldH);
-      initObjects(worldH);
-      snapCamera = true;
-      crouchWanted = false;
-      gliding = false;
-      status = {PLAYER_MAX_HP, 0, 0, 0};
+      levelDone = false;  // dying on the nest does not count
+      gameOver = --status.lives <= 0;
+      if (!gameOver) {  // try this level again
+        respawn(p, worldH);
+        initGorillas(gorillas, worldH);
+        initObjects(worldH);
+        snapCamera = true;
+        crouchWanted = false;
+        gliding = false;
+        status = {PLAYER_MAX_HP, 0, 0, status.lives};
+      }
     }
     // Ease the sink so the bird glides on and off boxes instead of popping.
     const float sinkTarget = targetSink(p, worldH);
     visualSink += constrain(sinkTarget - visualSink, -3.0f, 3.0f);
     const Hud hud = {
         exitHeld,
-        now < status.jumpBoostUntil ? status.jumpBoostUntil - now : 0,
         now < status.speedBoostUntil ? status.speedBoostUntil - now : 0,
-        status.hp, now < status.invulnUntil && (now / 100) % 2 == 0, gliding,
+        status.hp, status.lives,
+        now < status.invulnUntil && (now / 100) % 2 == 0, gliding,
         visualSink,
         levelMs, totalMs};
 
@@ -1503,16 +1578,22 @@ void runSuperFlashyBirds(TFT_eSPI& display) {
       const bool last = levelIndex + 1 == LEVEL_COUNT;
       drawBanner(target, title, times,
                  last ? "All done! Back to level 1" : "Loading next level");
+    } else if (gameOver) {
+      drawBanner(target, "Game over", "Out of lives", "Back to level 1");
     }
     if (useSprite) frame.pushSprite(0, 0);
 
-    if (levelDone) {
-      audioPlayTone(1320, 80);
+    if (levelDone || gameOver) {
+      audioPlayTone(gameOver ? 160 : 1320, gameOver ? 300 : 80);
       delay(1800);
       lastTick = millis();
       levelMs = 0;
-      levelIndex = (levelIndex + 1) % LEVEL_COUNT;
-      if (levelIndex == 0) totalMs = 0;  // a new run after the last level
+      levelIndex = gameOver ? 0 : (levelIndex + 1) % LEVEL_COUNT;
+      if (levelIndex == 0) totalMs = 0;  // a new run
+      if (gameOver) {
+        status.hp = PLAYER_MAX_HP;
+        status.lives = START_LIVES;
+      }
       level = &LEVELS[levelIndex];
       worldH = level->rows * TILE;
       snapCamera = true;
@@ -1522,7 +1603,6 @@ void runSuperFlashyBirds(TFT_eSPI& display) {
       initGorillas(gorillas, worldH);
       initObjects(worldH);
       status.invulnUntil = 0;
-      status.jumpBoostUntil = 0;
       status.speedBoostUntil = 0;
       visualSink = BIRD_SINK;
       jumpBufferUntil = 0;

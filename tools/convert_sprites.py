@@ -14,7 +14,7 @@ OUT = ROOT / "include" / "flappy_sprites.h"
 TRANSPARENT = 0xF81F
 
 # (C++ name, source PNG)
-# Bird art variant: "" for the original frames, "Alternate" or "Big" for the others.
+# Bird art variant: the file name suffix of the flap frames (only "Big" is kept).
 BIRD_SET = "Big"
 
 # Pipe art variant: "" for the green pipes, "Red" for the red ones.

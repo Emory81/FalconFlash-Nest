@@ -13,7 +13,7 @@ ART = ROOT / "include" / "art" / "super-flashy-birds"
 OUT = ROOT / "include" / "super_flashy_sprites.h"
 
 TRANSPARENT = 0xF81F
-ARROW = ROOT / "include" / "art" / "DirectionalBlock.png"
+ARROW = ART / "DirectionalBlock.png"
 
 SPRITES = [
     ("sfbBird", ART / "FlashyBirdStandStill.png"),
@@ -26,6 +26,7 @@ SPRITES = [
     ("sfbWalk6", ART / "FlashyBirdRightFootTransitionPost.png"),
     ("sfbWalk7", ART / "FlashyBirdRightFootTransitionPost2.png"),
     ("sfbDuck", ART / "FlashyBirdDucking.png"),
+    ("sfbDive", ART / "FlashyBirdDive.png"),  # shown while floating
     ("sfbGorilla", ART / "Gorilla.png"),
     ("sfbRedGorilla", ART / "RedGorilla.png"),
     ("sfbDirt", ART / "DirtTile.png"),
@@ -36,6 +37,7 @@ SPRITES = [
     ("sfbMysteryOff", ART / "MysteryBox.png", 0.4),
     ("sfbEgg", ART / "RedEgg.png"),
     ("sfbBlueEgg", ART / "BlueEgg.png"),
+    ("sfbGreenEgg", ART / "GreenEgg.png"),
     ("sfbRat", ART / "Rat.png"),
     ("sfbFox", ART / "Fox.png"),
     ("sfbNest", ART / "Nest.png"),

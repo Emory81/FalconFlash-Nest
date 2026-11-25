@@ -34,7 +34,7 @@ are padded with air, so you don't need trailing dots.
 | `R` `L` `U` `D` | direction block: you can only pass through it moving right, left, up or down |
 | `F` | fox |
 | `B` | box (breaks when bumped from below) |
-| `M` | mystery box (hatches an egg: powerup, or sometimes a rat) |
+| `M` | mystery box (hatches an egg: red refills hearts, blue is speed, green is an extra life, or sometimes a rat) |
 
 ```
 ...BMB..........

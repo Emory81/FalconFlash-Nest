@@ -5,6 +5,7 @@
 #include "button_input.h"
 #include "flappy_bird.h"
 #include "flappy_sprites.h"
+#include "gallery.h"
 #include "guitar_hero.h"
 #include "super_flashy_birds.h"
 
@@ -19,7 +20,7 @@ constexpr int16_t TILE_LEFT = 8;
 constexpr int16_t TILE_TOP = 36;
 
 constexpr const char* GAME_NAMES[] = {
-    "Flappy Falcon", "Guitar Hero", "Pong", "Brick Breaker", "Runner",
+    "Flappy Falcon", "Guitar Hero", "Gallery", "Brick Breaker", "Runner",
     "Flashy Birds"};
 
 int16_t tileX(uint8_t index) {
@@ -41,12 +42,6 @@ void drawGuitarIcon(TFT_eSPI& display, int16_t x, int16_t y) {
   display.drawFastHLine(x + 28, y + 23, 12, TFT_YELLOW);
   display.fillCircle(x + 57, y + 12, 4, TFT_YELLOW);
   display.fillCircle(x + 67, y + 28, 4, TFT_CYAN);
-}
-
-void drawPongIcon(TFT_eSPI& display, int16_t x, int16_t y) {
-  display.fillRect(x + 10, y + 8, 5, 30, TFT_WHITE);
-  display.fillRect(x + 61, y + 8, 5, 30, TFT_WHITE);
-  display.fillCircle(x + 37, y + 22, 5, TFT_YELLOW);
 }
 
 void drawBrickBreakerIcon(TFT_eSPI& display, int16_t x, int16_t y) {
@@ -72,7 +67,7 @@ void drawGameIcon(TFT_eSPI& display, uint8_t index, int16_t x, int16_t y) {
       drawGuitarIcon(display, x, y);
       break;
     case 2:
-      drawPongIcon(display, x, y);
+      drawGalleryIcon(display, x, y);
       break;
     case 3:
       drawBrickBreakerIcon(display, x, y);
@@ -95,7 +90,7 @@ void drawScaledFlappySprite(TFT_eSPI& display, int16_t x, int16_t y,
       const int16_t sourceX =
           destX * BIRD_FLAP_CLOSED_WIDTH / size;
       const uint16_t color =
-          birdWingsBack[sourceY * BIRD_FLAP_CLOSED_WIDTH + sourceX];
+          flappyBirdPixels()[sourceY * BIRD_FLAP_CLOSED_WIDTH + sourceX];
       if (color != SPRITE_TRANSPARENT) {
         display.drawPixel(x + destX, y + destY, color);
       }
@@ -148,7 +143,7 @@ void drawFlappyTile(TFT_eSPI& display, int16_t x, int16_t y,
       const int16_t sourceX =
           scaledX * BACKGROUND_WIDTH / scaledWidth;
       pixels[destY * TILE_WIDTH + destX] =
-          backgroundImage[sourceY * BACKGROUND_WIDTH + sourceX];
+          flappyBackgroundPixels()[sourceY * BACKGROUND_WIDTH + sourceX];
     }
   }
 
@@ -246,6 +241,8 @@ void launchSelectedGame(TFT_eSPI& display, uint8_t selectedIndex) {
     runFlappyBird(display);
   } else if (selectedIndex == 1) {
     runGuitarHero(display);
+  } else if (selectedIndex == 2) {
+    runGallery(display);
   } else if (selectedIndex == 5) {
     runSuperFlashyBirds(display);
   } else {

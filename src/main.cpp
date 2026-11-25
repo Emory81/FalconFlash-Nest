@@ -68,7 +68,10 @@ void drawSplashScreen() {
 
   const int16_t logoX = (screenW - FALCON_LOGO_WIDTH) / 2;
   const int16_t logoY = (screenH - blockHeight) / 2;
+  const bool oldSwap = tft.getSwapBytes();
+  tft.setSwapBytes(true);  // pushImage wants byte-swapped RGB565
   tft.pushImage(logoX, logoY, FALCON_LOGO_WIDTH, FALCON_LOGO_HEIGHT, falconLogo);
+  tft.setSwapBytes(oldSwap);
 
   tft.setTextColor(TFT_WHITE, TFT_BLACK);
   tft.setTextDatum(MC_DATUM);

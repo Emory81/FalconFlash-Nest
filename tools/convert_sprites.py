@@ -29,8 +29,11 @@ SPRITES = [
     ("pipeCap", ROOT / "include" / "art" / f"PipeCap{PIPE_SET}.png"),
 ]
 
-BACKGROUND = ROOT / "include" / "art" / "FreyDrawingBackground.png"
-BACKGROUND_NIGHT = ROOT / "include" / "art" / "FreyDrawingBackgroundNight.png"
+# The building has a transparent sky area; each sky is laid behind it, aligned
+# to the top of the screen.
+BUILDING = ROOT / "include" / "art" / "FreyDrawingBackground.png"
+SKY_DAY = ROOT / "include" / "art" / "DaySky.png"
+SKY_NIGHT = ROOT / "include" / "art" / "NightSky.png"
 
 
 def rgb_to_rgb565(r: int, g: int, b: int) -> int:
@@ -65,12 +68,44 @@ def cover_resize(image: Image.Image, width: int, height: int) -> Image.Image:
     return resized.crop((left, top, left + width, top + height))
 
 
-def convert_background(path: Path) -> tuple[int, int, list[int]]:
+def compose_background(building: Image.Image, sky_path: Path) -> Image.Image:
+    sky = Image.open(sky_path).convert("RGBA")
+    canvas = Image.new("RGBA", building.size)
+    canvas.alpha_composite(sky)
+    canvas.alpha_composite(building)
+    # Stray gaps neither layer covers take the color of the pixel above.
+    holes = [(x, y) for y in range(canvas.height) for x in range(canvas.width)
+             if canvas.getpixel((x, y))[3] < 255]
+    if len(holes) > 16:
+        raise ValueError(f"{sky_path.name}: {len(holes)} pixels covered by "
+                         "neither layer")
+    for x, y in holes:
+        print(f"{sky_path.name}: filled gap at ({x}, {y})")
+        canvas.putpixel((x, y), canvas.getpixel((x, max(0, y - 1))))
+    return canvas
+
+
+def building_mask(building: Image.Image) -> tuple[int, list[int]]:
+    """One bit per pixel (MSB first), set where the building is opaque, for the
+    rows from the top down to the last one that shows any sky. Used to draw
+    effects behind the building."""
+    alpha = building.getchannel("A")
+    width = building.width
+    rows = 1 + max(y for y in range(building.height) for x in range(width)
+                   if alpha.getpixel((x, y)) < 128)
+    mask = [0] * (rows * width // 8)
+    for y in range(rows):
+        for x in range(width):
+            if alpha.getpixel((x, y)) >= 128:
+                mask[y * (width // 8) + x // 8] |= 0x80 >> (x % 8)
+    return rows, mask
+
+
+def convert_background(source: Image.Image) -> tuple[int, int, list[int]]:
     """Fit the image to the screen and convert it to RGB332 (dithering only photos),
     the 8-bit sprite's native format (r:3 g:3 b:2), so the game can copy it
     straight into its frame buffer."""
-    image = cover_resize(Image.open(path).convert("RGB"),
-                         SCREEN_WIDTH, SCREEN_HEIGHT)
+    image = cover_resize(source.convert("RGB"), SCREEN_WIDTH, SCREEN_HEIGHT)
     width, height = image.size
     buf = [[list(map(float, image.getpixel((x, y)))) for x in range(width)]
            for y in range(height)]
@@ -123,9 +158,14 @@ def main() -> None:
         lines.append("")
         print(f"{path.name}: {width}x{height}")
 
-    for name, path in (("backgroundImage", BACKGROUND),
-                       ("backgroundNightImage", BACKGROUND_NIGHT)):
-        width, height, pixels = convert_background(path)
+    building = Image.open(BUILDING).convert("RGBA")
+    if building.size != (SCREEN_WIDTH, SCREEN_HEIGHT):
+        raise ValueError(f"{BUILDING.name} must be {SCREEN_WIDTH}x{SCREEN_HEIGHT}")
+
+    for name, path in (("backgroundImage", SKY_DAY),
+                       ("backgroundNightImage", SKY_NIGHT)):
+        width, height, pixels = convert_background(
+            compose_background(building, path))
         if name == "backgroundImage":
             lines.append(f"constexpr uint16_t BACKGROUND_WIDTH = {width};")
             lines.append(f"constexpr uint16_t BACKGROUND_HEIGHT = {height};")
@@ -138,6 +178,17 @@ def main() -> None:
         lines.append("};")
         lines.append("")
         print(f"{path.name}: {width}x{height}")
+
+    rows, mask = building_mask(building)
+    lines.append(f"constexpr uint16_t BUILDING_MASK_HEIGHT = {rows};")
+    lines.append("// 1 bit per pixel, MSB first: set where the building is.")
+    lines.append("constexpr uint8_t buildingMask[] PROGMEM = {")
+    for start in range(0, len(mask), 16):
+        chunk = mask[start:start + 16]
+        suffix = "," if start + 16 < len(mask) else ""
+        lines.append("  " + ", ".join(f"0x{v:02X}" for v in chunk) + suffix)
+    lines.append("};")
+    lines.append("")
 
     OUT.write_text("\n".join(lines), encoding="utf-8")
     print(f"Wrote {OUT}")

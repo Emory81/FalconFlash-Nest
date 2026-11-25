@@ -5,7 +5,7 @@ from pathlib import Path
 from PIL import Image
 
 SRC = Path(__file__).resolve().parents[1] / "assets" / "falcon_logo_small.png"
-OUT = Path(__file__).resolve().parents[1] / "include" / "falcon_logo.h"
+OUT = Path(__file__).resolve().parents[1] / "include" / "display" / "falcon_logo.h"
 
 # The source is drawn at its final on-screen size, so it is not resized.
 

@@ -91,7 +91,7 @@ def main() -> None:
     parser.add_argument(
         "--output",
         type=Path,
-        default=Path("include/boot_sound_data.h"),
+        default=Path("include/audio/boot_sound_data.h"),
     )
     parser.add_argument("--prefix", default="boot_sound")
     args = parser.parse_args()

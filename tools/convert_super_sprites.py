@@ -100,14 +100,35 @@ def sky_lines() -> list[str]:
             r, g, b = image.getpixel((x, y))
             pixels.append((round(r * 7 / 255) << 5) | (round(g * 7 / 255) << 2)
                           | round(b * 3 / 255))
+    # Each row is run-length encoded as (length, color) byte pairs; the sky
+    # is mostly flat, so this is a small fraction of the raw picture.
+    runs, starts = [], []
+    for y in range(image.height):
+        starts.append(len(runs))
+        row = pixels[y * image.width:(y + 1) * image.width]
+        x = 0
+        while x < len(row):
+            n = 1
+            while x + n < len(row) and n < 255 and row[x + n] == row[x]:
+                n += 1
+            runs += [n, row[x]]
+            x += n
+    if len(runs) > 0xFFFF:
+        raise ValueError(f"{SKY.name} has too much detail to compress")
     lines = [
         f"constexpr uint16_t sfbSkyWidth = {image.width};",
         f"constexpr uint16_t sfbSkyHeight = {image.height};",
-        "alignas(4) constexpr uint8_t sfbSky[] PROGMEM = {",
+        "// Where each row starts in sfbSkyRuns.",
+        "constexpr uint16_t sfbSkyRows[] PROGMEM = {",
     ]
-    for i in range(0, len(pixels), 16):
-        lines.append("    " + ", ".join(f"0x{p:02X}" for p in pixels[i:i + 16]) + ",")
+    for i in range(0, len(starts), 12):
+        lines.append("    " + ", ".join(str(v) for v in starts[i:i + 12]) + ",")
+    lines += ["};", "// RGB332 runs: length, color.",
+              "constexpr uint8_t sfbSkyRuns[] PROGMEM = {"]
+    for i in range(0, len(runs), 16):
+        lines.append("    " + ", ".join(f"0x{v:02X}" for v in runs[i:i + 16]) + ",")
     lines += ["};", ""]
+    print(f"{SKY.name}: {len(runs) + 2 * len(starts)} bytes compressed")
     return lines
 
 

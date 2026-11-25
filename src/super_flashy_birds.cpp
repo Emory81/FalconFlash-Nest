@@ -4,8 +4,8 @@
 
 #include <cmath>
 
-#include "audio_helper.h"
-#include "button_input.h"
+#include "audio/audio_helper.h"
+#include "input/button_input.h"
 #include "super_flashy_levels.h"
 #include "super_flashy_sprites.h"
 
@@ -683,21 +683,36 @@ void drawScaled(TFT_eSPI& d, int16_t x, int16_t y, int16_t w, int16_t h,
 // Pixels of the 8-bit frame sprite, or null when drawing straight to the screen.
 uint8_t* gFrameBuffer = nullptr;
 
-// The sky picture scrolls sideways at a quarter of the camera speed and wraps.
-// Without a frame buffer the sky is a flat color.
+// Unpack one row of the sky (RGB332) into `line`, sfbSkyWidth pixels long.
+void skyRow(int16_t y, uint8_t* line) {
+  const uint8_t* run = sfbSkyRuns + pgm_read_word(&sfbSkyRows[y]);
+  for (int16_t x = 0; x < sfbSkyWidth; run += 2) {
+    const uint8_t length = pgm_read_byte(run);
+    memset(line + x, pgm_read_byte(run + 1), length);
+    x += length;
+  }
+}
+
+// The sky picture scrolled sideways by `offset`, wrapping, into an 8-bit frame
+// buffer as wide as the sky.
+void copySky(uint8_t* frame, int16_t offset, int16_t rows) {
+  uint8_t line[sfbSkyWidth];
+  for (int16_t y = 0; y < rows && y < sfbSkyHeight; ++y) {
+    skyRow(y, line);
+    uint8_t* const target = frame + y * sfbSkyWidth;
+    memcpy(target, line + offset, sfbSkyWidth - offset);
+    memcpy(target + sfbSkyWidth - offset, line, offset);
+  }
+}
+
+// In the game the sky scrolls at a quarter of the camera speed. Without a frame
+// buffer it is a flat color.
 void drawSky(TFT_eSPI& d, int16_t cameraX) {
   if (gFrameBuffer == nullptr || d.width() != sfbSkyWidth) {
     d.fillRect(0, 0, d.width(), d.height(), SKY);
     return;
   }
-  const int16_t offset = (cameraX / 4) % sfbSkyWidth;
-  const int16_t rows = min<int16_t>(d.height(), sfbSkyHeight);
-  for (int16_t y = 0; y < rows; ++y) {
-    const uint8_t* src = sfbSky + y * sfbSkyWidth;
-    uint8_t* dst = gFrameBuffer + y * sfbSkyWidth;
-    memcpy_P(dst, src + offset, sfbSkyWidth - offset);
-    memcpy_P(dst + sfbSkyWidth - offset, src, offset);
-  }
+  copySky(gFrameBuffer, (cameraX / 4) % sfbSkyWidth, d.height());
 }
 
 // Dirt / background tiles (the H cells of the map): drawn, never solid.
@@ -1721,15 +1736,17 @@ void respawn(Player& p, int16_t screenH) {
 }
 }  // namespace
 
-const uint8_t* superFlashySkyPixels() { return sfbSky; }
+void copySuperFlashySky(uint8_t* frame, int16_t offset) {
+  copySky(frame, offset, sfbSkyHeight);
+}
 
 void drawSuperFlashySkyThumbnail(TFT_eSPI& d, int16_t x, int16_t y, int16_t w,
                                  int16_t h) {
+  uint8_t line[sfbSkyWidth];
   for (int16_t dy = 0; dy < h; ++dy) {
-    const int32_t row = (dy * sfbSkyHeight / h) * sfbSkyWidth;
+    skyRow(dy * sfbSkyHeight / h, line);
     for (int16_t dx = 0; dx < w; ++dx) {
-      const uint8_t c = pgm_read_byte(&sfbSky[row + dx * sfbSkyWidth / w]);
-      d.drawPixel(x + dx, y + dy, d.color8to16(c));
+      d.drawPixel(x + dx, y + dy, d.color8to16(line[dx * sfbSkyWidth / w]));
     }
   }
 }

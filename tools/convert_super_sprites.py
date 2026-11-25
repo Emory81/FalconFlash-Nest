@@ -67,6 +67,32 @@ def convert(path: Path, shade: float = 1.0, angle: int = 0):
     return image.width, image.height, pixels
 
 
+# The sky fills the screen and wraps sideways. It is stored as RGB332, the
+# game's 8-bit frame buffer format, so rows can be copied straight in.
+SKY = ART / "Sky.png"
+
+
+def sky_lines() -> list[str]:
+    image = Image.open(SKY).convert("RGB")
+    if image.size != (320, 240):
+        raise ValueError(f"{SKY.name} must be 320x240")
+    pixels = []
+    for y in range(image.height):
+        for x in range(image.width):
+            r, g, b = image.getpixel((x, y))
+            pixels.append((round(r * 7 / 255) << 5) | (round(g * 7 / 255) << 2)
+                          | round(b * 3 / 255))
+    lines = [
+        f"constexpr uint16_t sfbSkyWidth = {image.width};",
+        f"constexpr uint16_t sfbSkyHeight = {image.height};",
+        "alignas(4) constexpr uint8_t sfbSky[] PROGMEM = {",
+    ]
+    for i in range(0, len(pixels), 16):
+        lines.append("    " + ", ".join(f"0x{p:02X}" for p in pixels[i:i + 16]) + ",")
+    lines += ["};", ""]
+    return lines
+
+
 def main() -> None:
     lines = [
         "#pragma once",
@@ -88,6 +114,7 @@ def main() -> None:
             lines.append(f"    {row},")
         lines.append("};")
         lines.append("")
+    lines += sky_lines()
     OUT.write_text("\n".join(lines), encoding="utf-8")
     print(f"wrote {OUT}")
 

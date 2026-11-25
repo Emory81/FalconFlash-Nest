@@ -51,7 +51,6 @@ const Level* level = &LEVELS[0];
 int16_t worldW() { return level->tiles * TILE; }
 
 constexpr uint16_t SKY = 0x5DFF;
-constexpr uint16_t CLOUD = TFT_WHITE;
 
 constexpr uint32_t FRAME_MS = 30;
 constexpr uint32_t DOUBLE_PRESS_MS = 500;
@@ -565,11 +564,24 @@ void drawScaled(TFT_eSPI& d, int16_t x, int16_t y, int16_t w, int16_t h,
   }
 }
 
-void drawCloud(TFT_eSPI& d, int16_t x, int16_t y) {
-  d.fillCircle(x, y, 10, CLOUD);
-  d.fillCircle(x + 12, y - 5, 13, CLOUD);
-  d.fillCircle(x + 28, y, 10, CLOUD);
-  d.fillRect(x, y, 28, 10, CLOUD);
+// Pixels of the 8-bit frame sprite, or null when drawing straight to the screen.
+uint8_t* gFrameBuffer = nullptr;
+
+// The sky picture scrolls sideways at a quarter of the camera speed and wraps.
+// Without a frame buffer the sky is a flat color.
+void drawSky(TFT_eSPI& d, int16_t cameraX) {
+  if (gFrameBuffer == nullptr || d.width() != sfbSkyWidth) {
+    d.fillRect(0, 0, d.width(), d.height(), SKY);
+    return;
+  }
+  const int16_t offset = (cameraX / 4) % sfbSkyWidth;
+  const int16_t rows = min<int16_t>(d.height(), sfbSkyHeight);
+  for (int16_t y = 0; y < rows; ++y) {
+    const uint8_t* src = sfbSky + y * sfbSkyWidth;
+    uint8_t* dst = gFrameBuffer + y * sfbSkyWidth;
+    memcpy_P(dst, src + offset, sfbSkyWidth - offset);
+    memcpy_P(dst + sfbSkyWidth - offset, src, offset);
+  }
 }
 
 // Dirt / background tiles (the H cells of the map): drawn, never solid.
@@ -718,15 +730,7 @@ void drawFrame(TFT_eSPI& d, const Player& p, const Gorilla* gorillas,
                int16_t cameraX, int16_t cameraY, int16_t screenH,
                const Hud& hud) {
   gCameraY = cameraY;
-  d.fillRect(0, 0, d.width(), d.height(), SKY);
-
-  // Clouds drift at half the camera speed and wrap around.
-  constexpr int16_t CLOUD_SPAN = 640;
-  for (int16_t i = 0; i < 4; ++i) {
-    const int16_t cx =
-        ((i * 160 + 20 - cameraX / 2) % CLOUD_SPAN + CLOUD_SPAN) % CLOUD_SPAN - 80;
-    drawCloud(d, cx, 30 + (i * 37) % 70);
-  }
+  drawSky(d, cameraX);
 
   drawGround(d, cameraX, screenH);
   drawBoxesAndEggs(d, cameraX);
@@ -1269,6 +1273,8 @@ void runSuperFlashyBirds(TFT_eSPI& display) {
   frame.setColorDepth(8);
   frame.createSprite(screenW, screenH);
   const bool useSprite = frame.created();
+  gFrameBuffer =
+      useSprite ? static_cast<uint8_t*>(frame.getPointer()) : nullptr;
 
   int16_t worldH = level->rows * TILE;  // physics "screenH": the world bottom
   float cameraYf = 0;
@@ -1526,5 +1532,6 @@ void runSuperFlashyBirds(TFT_eSPI& display) {
 
   audioEnd();
   frame.deleteSprite();
+  gFrameBuffer = nullptr;
   waitForButtonRelease();
 }

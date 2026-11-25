@@ -1,6 +1,7 @@
 #include "arcade_games.h"
 
 #include <Arduino.h>
+#include <Preferences.h>
 
 #include <cmath>
 #include <cstdio>
@@ -16,7 +17,8 @@
 //                         BTN4 right
 //   Rock Paper Scissors:  BTN1 rock, BTN2 paper, BTN3 scissors, BTN4 day/night
 //   Brick Breaker:        BTN1 left, BTN4 right, BTN3 launch
-//   Runner:               BTN3 jump, hold BTN2 to duck
+//   Runner:               BTN3 jump, hold BTN2 to duck, BTN1/4 edge back and
+//                         forth a little
 //   Pong:                 BTN1 up, BTN2 down, BTN3 serve
 // Two players:
 //   Tic Tac Toe:          take turns with the one-player buttons
@@ -231,7 +233,9 @@ constexpr float PADDLE_SPEED = 6.5f;
 
 // ---- Runner -----------------------------------------------------------------
 constexpr int16_t GROUND_Y = 200;
-constexpr int16_t RUNNER_X = 36;
+constexpr int16_t RUNNER_X = 36;        // where the bird starts
+constexpr float RUNNER_REACH = 18.0f;   // how far it can edge from there
+constexpr float RUNNER_STEP = 1.5f;
 constexpr float RUNNER_JUMP = -9.5f;
 constexpr float RUNNER_GRAVITY = 0.7f;
 
@@ -329,6 +333,22 @@ void drawSpunEgg(TFT_eSPI& d, float cx, float cy, float angle) {
 // right now. The others stay put.
 float sway(const Obstacle& o) {
   return o.red && !o.flying ? 14.0f * sinf(o.x / 24.0f) : 0.0f;
+}
+
+// The best Runner score is kept in flash, so it survives powering off.
+uint32_t loadRunnerBest() {
+  Preferences preferences;
+  preferences.begin("runner", true);
+  const uint32_t best = preferences.getUInt("best", 0);
+  preferences.end();
+  return best;
+}
+
+void saveRunnerBest(uint32_t best) {
+  Preferences preferences;
+  preferences.begin("runner", false);
+  preferences.putUInt("best", best);
+  preferences.end();
 }
 
 // ---- Pong -------------------------------------------------------------------
@@ -734,7 +754,8 @@ void runBrickBreaker(TFT_eSPI& display) {
 }
 
 void runRunner(TFT_eSPI& display) {
-  static uint32_t best = 0;  // until power off
+  uint32_t best = loadRunnerBest();
+  float x = RUNNER_X;
   Session session(display);
   Obstacle obstacles[4] = {};
   float y = GROUND_Y, vy = 0;
@@ -761,6 +782,7 @@ void runRunner(TFT_eSPI& display) {
         speed = 4.0f;
         distance = 0;
         nextGap = 0;
+        x = RUNNER_X;
         over = false;
       }
     } else {
@@ -768,6 +790,9 @@ void runRunner(TFT_eSPI& display) {
         vy = RUNNER_JUMP;
         audioPlayTone(660, 20);
       }
+      if (in.held == Button::Button1) x -= RUNNER_STEP;
+      if (in.held == Button::Button4) x += RUNNER_STEP;
+      x = constrain(x, RUNNER_X - RUNNER_REACH, RUNNER_X + RUNNER_REACH);
       // Holding duck in the air drops faster.
       vy += in.held == Button::Button2 ? RUNNER_GRAVITY * 2.5f : RUNNER_GRAVITY;
       y += vy;
@@ -804,10 +829,13 @@ void runRunner(TFT_eSPI& display) {
         const float bottom = o.flying ? GROUND_Y - FLY_HEIGHT : GROUND_Y;
         // A few pixels of grace around the enemies' pictures.
         const float at = o.x + sway(o);
-        if (at + 3 < RUNNER_X + 24 && at + o.w - 3 > RUNNER_X + 8 &&
+        if (at + 3 < x + 24 && at + o.w - 3 > x + 8 &&
             top < bottom - 1 && y > bottom - o.h + 3) {
           over = true;
-          best = max<uint32_t>(best, distance / 10);
+          if (distance / 10 > best) {  // only write when it is beaten
+            best = distance / 10;
+            saveRunnerBest(best);
+          }
           audioPlayTone(160, 300);
         }
       }
@@ -839,23 +867,26 @@ void runRunner(TFT_eSPI& display) {
       }
     }
     if (ducking) {
-      drawArt(d, RUNNER_X + 16 - sfbDuckWidth / 2,
+      drawArt(d, static_cast<int16_t>(x) + 16 - sfbDuckWidth / 2,
               static_cast<int16_t>(y) - sfbDuckHeight, sfbDuckWidth,
               sfbDuckHeight, sfbDuck);
     } else {
       const uint16_t* art =
           y < GROUND_Y ? sfbWalk1 : walk[static_cast<int>(stride) % 8];
-      drawArt(d, RUNNER_X, static_cast<int16_t>(y) - 32, 32, 32, art);
+      drawArt(d, static_cast<int16_t>(x), static_cast<int16_t>(y) - 32, 32, 32,
+              art);
     }
     char hud[32];
     snprintf(hud, sizeof(hud), "Score %lu   Best %lu",
              static_cast<unsigned long>(distance / 10),
              static_cast<unsigned long>(best));
     text(d, hud, W - 6, 10, TFT_BLACK, 1, MR_DATUM);
-    text(d, "3 jump   hold 2 duck", W / 2, H - 10, TFT_WHITE);
+    text(d, "3 jump   hold 2 duck   1/4 nudge", W / 2, H - 10, TFT_WHITE);
     if (over) banner(d, "Game over", "BTN3: run again");
     session.show();
   }
+  // Quitting in the middle of a run still counts it.
+  if (distance / 10 > best) saveRunnerBest(distance / 10);
 }
 
 void runPong(TFT_eSPI& display, bool twoPlayer) {

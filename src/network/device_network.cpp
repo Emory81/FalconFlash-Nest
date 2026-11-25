@@ -11,8 +11,14 @@
 #include "device_config.h"
 
 namespace {
-constexpr char WIFI_SSID[] = "Messiah Guest";
-constexpr char WIFI_PASSWORD[] = "";
+#ifndef FALCON_WIFI_SSID
+#define FALCON_WIFI_SSID "Messiah Guest"
+#endif
+#ifndef FALCON_WIFI_PASSWORD
+#define FALCON_WIFI_PASSWORD ""
+#endif
+constexpr char WIFI_SSID[] = FALCON_WIFI_SSID;
+constexpr char WIFI_PASSWORD[] = FALCON_WIFI_PASSWORD;
 constexpr char WIFI_CHANNEL_KEY[] = "wifi_channel";
 constexpr char WIFI_BSSID_KEY[] = "wifi_bssid";
 constexpr char OTA_RESUME_BUTTON_KEY[] = "ota_resume_btn";
@@ -1022,7 +1028,7 @@ bool fetchOrderStatus(const String& orderId, OrderStatus& status) {
 }
 
 bool fetchAuthenticatedJson(const String& path, String& response,
-                            int* httpStatusOut) {
+                            int* httpStatusOut, bool clearTokenOnAuthFailure) {
   if (httpStatusOut != nullptr) {
     *httpStatusOut = 0;
   }
@@ -1037,7 +1043,7 @@ bool fetchAuthenticatedJson(const String& path, String& response,
   if (httpStatusOut != nullptr) {
     *httpStatusOut = httpStatus;
   }
-  if (httpStatus == 401 || httpStatus == 403) {
+  if ((httpStatus == 401 || httpStatus == 403) && clearTokenOnAuthFailure) {
     clearDeviceToken();
     return false;
   }

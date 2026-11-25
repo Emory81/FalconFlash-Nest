@@ -489,7 +489,9 @@ bool jsonFlagIsTrue(const String& json, const char* key) {
 bool fetchSpotify(DeskSpotify& spotify) {
   String response;
   int httpStatus = 0;
-  const bool ok = fetchAuthenticatedJson(SPOTIFY_PATH, response, &httpStatus);
+  // Spotify auth failures must not unpair the device (clearTokenOnAuthFailure=false).
+  const bool ok = fetchAuthenticatedJson(SPOTIFY_PATH, response, &httpStatus,
+                                         false);
   const String linkedRaw = ok || response.length() > 0
                                ? extractJsonScalar(response, "linked")
                                : String();

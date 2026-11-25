@@ -119,9 +119,14 @@ def preserve_release_firmware(source, target, env):
     shutil.copy2(source_path, release_dir / "firmware.bin")
 
 
+wifi_ssid = dotenv.get("FALCON_WIFI_SSID", "").strip() or "Messiah Guest"
+wifi_password = dotenv.get("FALCON_WIFI_PASSWORD", "")
+
 cpp_defines = [
     ("FALCON_CONFIG_PROVISIONING", "1" if provisioning else "0"),
     ("FALCON_FIRMWARE_VERSION", c_string(build_version)),
+    ("FALCON_WIFI_SSID", c_string(wifi_ssid)),
+    ("FALCON_WIFI_PASSWORD", c_string(wifi_password)),
 ]
 for key, value in provisioned_values.items():
     if key.endswith(("GAME_MODE_ONLY", "AUDIO_MUTED")):

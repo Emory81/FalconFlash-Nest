@@ -67,5 +67,8 @@ DeviceMessagePollStatus fetchDeviceMessages(
     uint32_t& nextSinceMessageId);
 
 // Authenticated Nest API GET helper for Desk Mode and similar features.
+// clearTokenOnAuthFailure=false keeps the pairing when a non-critical feed
+// (like Spotify in Desk Mode) returns 401/403.
 bool fetchAuthenticatedJson(const String& path, String& response,
-                            int* httpStatusOut = nullptr);
+                            int* httpStatusOut = nullptr,
+                            bool clearTokenOnAuthFailure = true);

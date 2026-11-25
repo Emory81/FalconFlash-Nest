@@ -592,6 +592,21 @@ void drawLayer(TFT_eSPI& d, bool (*solid)(int16_t, int16_t), const uint16_t* til
   }
 }
 
+// True if something other than grass sits on top of a tile: dirt, a direction
+// block or an intact box.
+bool coveredAbove(int16_t col, int16_t row, int16_t screenH) {
+  if (decorTile(col, row + 1) || arrowAt(col, row + 1) != ARROW_NONE) {
+    return true;
+  }
+  for (const auto& b : boxes) {
+    if (!b.broken && b.kind != BoxKind::Nest && b.x == col * TILE &&
+        b.y + b.h == rowTop(row, screenH)) {
+      return true;
+    }
+  }
+  return false;
+}
+
 void drawGround(TFT_eSPI& d, int16_t cameraX, int16_t screenH) {
   drawLayer(d, decorTile, sfbDirt, cameraX, screenH);  // dirt / background
   drawLayer(d, plainTile, sfbGrass, cameraX, screenH);
@@ -602,12 +617,14 @@ void drawGround(TFT_eSPI& d, int16_t cameraX, int16_t screenH) {
   const int16_t last = min<int16_t>(level->tiles - 1, (cameraX + d.width()) / TILE);
   for (int16_t col = first; col <= last; ++col) {
     for (int16_t row = 0; row < MAX_ROWS; ++row) {
-      // Black outline on every side of a grass tile that is not touching
-      // another grass tile.
+      // Black outline on the sides and bottom of a grass tile that are not
+      // touching another grass tile; the top only where something covers it.
       if (plainTile(col, row)) {
         const int16_t x = col * TILE - cameraX;
         const int16_t y = rowTop(row, screenH) - gCameraY;
-        if (!plainTile(col, row + 1)) d.drawFastHLine(x, y, TILE, TFT_BLACK);
+        if (coveredAbove(col, row, screenH)) {
+          d.drawFastHLine(x, y, TILE, TFT_BLACK);
+        }
         if (!plainTile(col, row - 1)) {
           d.drawFastHLine(x, y + TILE - 1, TILE, TFT_BLACK);
         }

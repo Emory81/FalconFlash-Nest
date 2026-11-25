@@ -29,8 +29,6 @@ SPRITES = [
     ("sfbGorilla", ART / "Gorilla.png"),
     ("sfbRedGorilla", ART / "RedGorilla.png"),
     ("sfbDirt", ART / "DirtTile.png"),
-    ("sfbDirtLeft", ART / "DirtTileLeft.png"),
-    ("sfbDirtRight", ART / "DirtTileRight.png"),
     ("sfbGrass", ART / "GrassTile.png"),
     ("sfbBox", ART / "Box.png"),
     ("sfbMystery", ART / "MysteryBox.png"),

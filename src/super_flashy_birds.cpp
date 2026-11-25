@@ -128,8 +128,9 @@ bool solidTile(int16_t col, int16_t row) {
 
 // ---- Direction blocks -------------------------------------------------------
 // Solid tiles that the bird can pass through only while moving the way their
-// arrow points; to enemies they are ordinary tiles. The order matches the
-// masks in Level::arrows.
+// arrow points, except that it can also jump up through any of them but a down
+// one. To enemies they are ordinary tiles. The order matches the masks in
+// Level::arrows.
 enum ArrowDir : int8_t {
   ARROW_NONE = -1,
   ARROW_RIGHT,
@@ -154,6 +155,12 @@ bool plainTile(int16_t col, int16_t row) {
 // True if the tile stops a bird that is moving in direction `moving`.
 bool blocksBird(int16_t col, int16_t row, ArrowDir moving) {
   return solidTile(col, row) && arrowAt(col, row) != moving;
+}
+
+// True if the tile stops the head of a rising bird.
+bool blocksJump(int16_t col, int16_t row) {
+  return plainTile(col, row) ||
+         (solidTile(col, row) && arrowAt(col, row) == ARROW_DOWN);
 }
 
 // ---- Boxes, eggs and rats ---------------------------------------------------
@@ -293,6 +300,10 @@ void resolveWalls(Player& p, float prevX, int16_t screenH) {
       if (!solidTile(c, r)) continue;
       if (rowTop(r, screenH) >= bottom - 1.0f || rowBottom(r, screenH) <= top) {
         continue;
+      }
+      if (p.vy < 0 && !blocksJump(c, r) &&
+          top - p.vy >= rowBottom(r, screenH) - 1.0f) {
+        continue;  // jumping up into a direction block from below
       }
       if (prevX + PLAYER_W <= c * TILE + 0.01f) {
         if (!blocksBird(c, r, ARROW_RIGHT)) continue;
@@ -481,7 +492,7 @@ void bumpHead(Player& p, int16_t screenH) {
     for (int16_t r = 0; r < MAX_ROWS; ++r) {
       // Only a tile's exposed underside counts. Internal seams inside a wall
       // must not stop a bird that is rising beside it.
-      if (r == 0 || !blocksBird(c, r, ARROW_UP) || plainTile(c, r - 1)) continue;
+      if (r == 0 || !blocksJump(c, r) || plainTile(c, r - 1)) continue;
       const float bottom = rowBottom(r, screenH);
       if (head < bottom && prevHead >= bottom - 4) {
         p.y = bottom + height;
@@ -509,9 +520,9 @@ bool hasHeadroom(const Player& p, int16_t screenH) {
     for (int16_t r = 0; r < MAX_ROWS; ++r) {
       if (!solidTile(c, r)) continue;
       // A standing bird walking into a direction block must not be forced to
-      // crouch; only standing up into one from below is stopped.
+      // crouch; only standing up into a down one from below is stopped.
       const int8_t arrow = arrowAt(c, r);
-      if (arrow != ARROW_NONE && (!p.ducking || arrow == ARROW_UP)) continue;
+      if (arrow != ARROW_NONE && (!p.ducking || arrow != ARROW_DOWN)) continue;
       if (rowTop(r, screenH) < crouchTop && rowBottom(r, screenH) > standTop) {
         return false;
       }
@@ -647,6 +658,7 @@ struct Hud {
   uint32_t speedLeftMs;
   int hp;
   bool blink;  // hide the bird this frame (just hurt)
+  bool gliding;
   float sink;  // how far the bird is drawn below its feet line right now
   uint32_t levelMs;  // time on this level
   uint32_t totalMs;  // time since the first level
@@ -739,8 +751,8 @@ void drawFrame(TFT_eSPI& d, const Player& p, const Gorilla* gorillas,
   const uint16_t* art = sfbBird;
   int16_t artW = 32;
   int16_t artH = 32;
-  if (p.ducking) {
-    art = sfbDuck;  // used on the ground and in the air
+  if (p.ducking || hud.gliding) {
+    art = sfbDuck;  // crouching on the ground or in the air, and floating
     artW = sfbDuckWidth;
     artH = sfbDuckHeight;
   } else if (!p.onGround) {
@@ -1418,7 +1430,8 @@ void runSuperFlashyBirds(TFT_eSPI& display) {
         exitHeld,
         now < status.jumpBoostUntil ? status.jumpBoostUntil - now : 0,
         now < status.speedBoostUntil ? status.speedBoostUntil - now : 0,
-        status.hp, now < status.invulnUntil && (now / 100) % 2 == 0, visualSink,
+        status.hp, now < status.invulnUntil && (now / 100) % 2 == 0, gliding,
+        visualSink,
         levelMs, totalMs};
 
     // Camera follows the player, clamped to the world. A world shorter than

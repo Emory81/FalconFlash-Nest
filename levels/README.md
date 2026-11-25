@@ -55,7 +55,8 @@ XXXXXXXXXXXX..XX
   the row 3 above the ground (two empty rows under it) can be walked under and
   bumped by jumping. Directly above the ground it is a crate you walk into.
 - **Direction blocks:** every side is solid except the way in that matches the
-  arrow (`U` is a platform you can jump up through). Enemies cannot pass them.
+  arrow, and you can also jump up through every one except `D`. Enemies cannot
+  pass them.
 - **Hill:** you only need to mark the top of the hill in each column. Every
   cell below it (above the ground) is filled in.
 - **Height:** up to 32 rows. The screen shows 15 rows, so taller maps scroll up

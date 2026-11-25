@@ -2,4 +2,5 @@
 
 #include <TFT_eSPI.h>
 
-bool showGameMenu(TFT_eSPI& display, bool gameModeOnly = false);
+// Runs until the player holds BTN3 to shut off; the caller then powers down.
+void showGameMenu(TFT_eSPI& display);

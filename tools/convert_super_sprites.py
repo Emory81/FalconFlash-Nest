@@ -13,7 +13,14 @@ ART = ROOT / "include" / "art" / "super-flashy-birds"
 OUT = ROOT / "include" / "super_flashy_sprites.h"
 
 TRANSPARENT = 0xF81F
+DIRT = ART / "DirtTile.png"
+
+
+def grass_shadow(y: int) -> float:
+    """Brightness of row y of a dirt tile that sits under grass."""
+    return 0.55 if y < 5 else (0.75 if y < 9 else 1.0)
 ARROW = ART / "DirectionalBlock.png"
+GRASSY = ART / "GrassyDirectionalBlock.png"  # used next to grass
 
 SPRITES = [
     ("sfbBird", ART / "FlashyBirdStandStill.png"),
@@ -29,7 +36,8 @@ SPRITES = [
     ("sfbDive", ART / "FlashyBirdDive.png"),  # shown while floating
     ("sfbGorilla", ART / "Gorilla.png"),
     ("sfbRedGorilla", ART / "RedGorilla.png"),
-    ("sfbDirt", ART / "DirtTile.png"),
+    ("sfbDirt", DIRT),
+    ("sfbDirtShadow", DIRT, grass_shadow),
     ("sfbGrass", ART / "GrassTile.png"),
     ("sfbBox", ART / "Box.png"),
     ("sfbMystery", ART / "MysteryBox.png"),
@@ -44,11 +52,17 @@ SPRITES = [
     ("sfbEggCracking", ART / "CrackingEgg.png"),
     ("sfbEggOpen", ART / "CrackedOpenEgg.png"),
     ("sfbGoldEgg", ART / "GoldenEgg.png"),
+    ("sfbInfinityEgg", ART / "InfinityEgg.png"),
+    ("sfbBean", ART / "MagicBean.png"),
     # Direction blocks: one drawing (pointing right), rotated counterclockwise.
     ("sfbArrowRight", ARROW),
     ("sfbArrowLeft", ARROW, 1.0, 180),
     ("sfbArrowUp", ARROW, 1.0, 90),
     ("sfbArrowDown", ARROW, 1.0, 270),
+    ("sfbGrassyArrowRight", GRASSY),
+    ("sfbGrassyArrowLeft", GRASSY, 1.0, 180),
+    ("sfbGrassyArrowUp", GRASSY, 1.0, 90),
+    ("sfbGrassyArrowDown", GRASSY, 1.0, 270),
 ]
 
 
@@ -56,13 +70,15 @@ def rgb565(r: int, g: int, b: int) -> int:
     return ((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3)
 
 
-def convert(path: Path, shade: float = 1.0, angle: int = 0):
+def convert(path: Path, shade=1.0, angle: int = 0):
+    # shade: a brightness factor, or a function of the row that returns one.
     image = Image.open(path).convert("RGBA").rotate(angle, expand=True)
     pixels = []
     for y in range(image.height):
         for x in range(image.width):
             r, g, b, a = image.getpixel((x, y))
-            r, g, b = int(r * shade), int(g * shade), int(b * shade)
+            k = shade(y) if callable(shade) else shade
+            r, g, b = int(r * k), int(g * k), int(b * k)
             pixels.append(TRANSPARENT if a < 128 else rgb565(r, g, b))
             if pixels[-1] == TRANSPARENT and a >= 128:
                 pixels[-1] ^= 1  # never collide with the key color

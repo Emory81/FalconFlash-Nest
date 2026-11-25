@@ -1,7 +1,11 @@
-# Super Flashy Birds - Level 1
-# See levels/README.md for the full list of symbols.
-#   X ground   H background hill   S start   N nest (goal)
-#   G gorilla  g red gorilla       F fox     B box   M mystery box
+# Super Flashy Birds - Level 3
+# See levels/README.md for how each symbol behaves.
+#   . air (or space)   X grass ground      H dirt / background
+#   S start            N nest (goal)       O golden egg          I infinity egg
+#   B box              M mystery box         m magic bean box
+#   0-9 bean spot (a number alone on a line starts that sublevel)
+#   G gorilla          g red gorilla       F fox
+#   R right  L left  U up  D down          (direction blocks)
 # (scaled up 2x from the old 32 px tile version; the original is in old-32px/)
 ................................................................................................................................................
 ................................................................................................................................................

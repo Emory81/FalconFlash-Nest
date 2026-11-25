@@ -566,4 +566,9 @@ void runFlappyBird(TFT_eSPI& display) {
 }
 
 const uint8_t* flappyBackgroundPixels() { return backgroundImage; }
+const uint8_t* flappyNightBackgroundPixels() { return backgroundNightImage; }
 const uint16_t* flappyBirdPixels() { return birdWingsBack; }
+const uint16_t* flappyBirdFrame(uint8_t frame) {
+  return frame == 0 ? birdFlapOpen
+                    : (frame == 1 ? birdFlapTransition : birdFlapClosed);
+}

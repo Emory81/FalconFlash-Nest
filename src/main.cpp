@@ -376,23 +376,13 @@ bool createTimelineSprite(TFT_eSprite& screen) {
   return screen.created();
 }
 
-void showGamesFromTimeline(TFT_eSprite& screen, bool& useSprite,
-                           int16_t scrollOffset, uint8_t activeStage) {
+void showGamesFromTimeline(TFT_eSprite& screen) {
   // The game needs the same large sprite buffer. Release the timeline buffer
   // first so the game does not silently fall back to direct, flickery drawing.
   screen.deleteSprite();
-  useSprite = false;
 
   showGameMenu(tft);
-
-  // Recreate the timeline buffer after the game has released its buffer.
-  useSprite = createTimelineSprite(screen);
-  if (useSprite) {
-    drawOrderTimelineFrame(screen, scrollOffset, activeStage);
-    screen.pushSprite(0, 0);
-  } else {
-    drawOrderTimelineFrame(tft, scrollOffset, activeStage);
-  }
+  enterStandby(true);  // the menu only returns to shut the device off
 }
 
 void showOrderTimeline() {
@@ -412,7 +402,7 @@ void showOrderTimeline() {
     while (millis() - holdStart < ORDER_STATUS_HOLD_MS) {
       if (gameButtonPressed()) {
         waitForButtonRelease();
-        showGamesFromTimeline(screen, useSprite, scrollOffset, stage - 1);
+        showGamesFromTimeline(screen);
       }
       delay(10);
     }
@@ -436,7 +426,7 @@ void showOrderTimeline() {
       }
       if (gameButtonPressed()) {
         waitForButtonRelease();
-        showGamesFromTimeline(screen, useSprite, scrollOffset, stage);
+        showGamesFromTimeline(screen);
       }
       delay(ORDER_STATUS_FRAME_MS);
     }
@@ -534,7 +524,7 @@ void setup() {
   playBootSound();
   const bool demoMode = detectDemoMode();
   if (GAME_MODE_ONLY) {
-    showGameMenu(tft, true);
+    showGameMenu(tft);
     enterStandby(true);
     return;
   }

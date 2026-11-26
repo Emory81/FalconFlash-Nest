@@ -65,6 +65,13 @@ class Session {
     return frame.created() ? static_cast<uint8_t*>(frame.getPointer()) : nullptr;
   }
 
+  // Try again after a large image has been freed.
+  void reserveBuffer() {
+    if (frame.created()) return;
+    frame.setColorDepth(8);
+    frame.createSprite(W, rows);
+  }
+
   // Where to draw this frame.
   TFT_eSPI& canvas() {
     return frame.created() ? static_cast<TFT_eSPI&>(frame) : display;
@@ -340,6 +347,11 @@ void eggKick(float& vx, float& vy, float& spin, float angle, float speed,
 
 // The golden egg turned by `angle`, centered on (cx, cy).
 void drawSpunEgg(TFT_eSPI& d, float cx, float cy, float angle) {
+  if (sfbGoldEgg == nullptr || sfbGoldEggWidth == 0 || sfbGoldEggHeight == 0) {
+    d.fillEllipse(lroundf(cx), lroundf(cy), lroundf(EGG_A), lroundf(EGG_B),
+                  TFT_YELLOW);
+    return;
+  }
   const float c = cosf(angle);
   const float s = sinf(angle);
   constexpr int16_t R = 10;
@@ -650,6 +662,10 @@ void runRockPaperScissors(TFT_eSPI& display, bool twoPlayer) {
 
 void runBrickBreaker(TFT_eSPI& display) {
   Session session(display);
+  SuperFlashyAssets eggArt;
+  if (loadGameAssetImage("super/gold_egg.rgb565", "rgb565", eggArt.goldEgg)) {
+    bindSuperFlashyArt(eggArt);
+  }
   bool bricks[BRICK_ROWS][BRICK_COLS];
   uint16_t left = 0;
   uint8_t level = 1, lives = 3;
@@ -789,12 +805,16 @@ void runBrickBreaker(TFT_eSPI& display) {
     }
     session.show();
   }
+  eggArt.release();
 }
 
 void runRunner(TFT_eSPI& display) {
   FlappyAssets assets;
   SuperFlashyAssets sprites;
-  if (!loadFlappyAssets(assets) || !loadSuperFlashyAssets(sprites)) {
+  // The building picture is not used here, and it is too big to keep beside
+  // the runner sprites and the frame buffer.
+  if (!loadFlappyAssets(assets, false, false) ||
+      !loadSuperFlashyAssets(sprites)) {
     assets.release();
     sprites.release();
     display.fillScreen(TFT_BLACK);
@@ -806,10 +826,14 @@ void runRunner(TFT_eSPI& display) {
     return;
   }
   bindSuperFlashyArt(sprites);
-  assets.background.release();  // not used here, and it is big
+  Session session(display);
+  if (session.buffer() == nullptr) {
+    sprites.sky.release();
+    bindSuperFlashyArt(sprites);
+    session.reserveBuffer();
+  }
   uint32_t best = loadRunnerBest();
   float x = RUNNER_X;
-  Session session(display);
   Obstacle obstacles[4] = {};
   float y = GROUND_Y, vy = 0;
   float speed = 4.0f;
@@ -895,7 +919,7 @@ void runRunner(TFT_eSPI& display) {
     }
 
     TFT_eSPI& d = session.canvas();
-    if (session.buffer() != nullptr) {
+    if (session.buffer() != nullptr && sfbSkyRuns != nullptr) {
       copySuperFlashySky(session.buffer(),
                          static_cast<int32_t>(distance / 4) % W);
     } else {

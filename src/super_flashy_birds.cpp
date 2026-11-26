@@ -1792,29 +1792,46 @@ void drawSuperFlashyBirdsIcon(TFT_eSPI& d, int16_t x, int16_t y) {
 }
 
 void runSuperFlashyBirds(TFT_eSPI& display) {
-  SuperFlashyAssets art;
-  if (!loadSuperFlashyAssets(art)) {
-    display.fillScreen(TFT_BLACK);
-    display.setTextDatum(MC_DATUM);
-    display.setTextColor(TFT_WHITE, TFT_BLACK);
-    display.drawString("Game art unavailable", display.width() / 2,
-                       display.height() / 2);
-    delay(1200);
-    return;
-  }
-  bindSuperFlashyArt(art);
   const int16_t screenW = display.width();
   const int16_t screenH = display.height();
+  // Take the frame buffer before the sprites, so it is one contiguous block.
+  // Loading the art first splits the heap and this allocation fails, which
+  // makes every tile paint straight to the panel.
+  TFT_eSprite frame(&display);
+  frame.setColorDepth(8);
+  frame.createSprite(screenW, screenH);
+
+  SuperFlashyAssets art;
+  if (!loadSuperFlashyAssets(art)) {
+    frame.deleteSprite();
+    if (!loadSuperFlashyAssets(art)) {
+      display.fillScreen(TFT_BLACK);
+      display.setTextDatum(MC_DATUM);
+      display.setTextColor(TFT_WHITE, TFT_BLACK);
+      display.drawString("Game art unavailable", display.width() / 2,
+                         display.height() / 2);
+      delay(1200);
+      return;
+    }
+  }
+  if (!frame.created()) {
+    frame.setColorDepth(8);
+    frame.createSprite(screenW, screenH);
+  }
+  bool fullFrame = frame.created();
+  int16_t stripRows = screenH;
+  if (!fullFrame) {
+    stripRows = 60;
+    frame.setColorDepth(8);
+    frame.createSprite(screenW, stripRows);
+  }
+  bindSuperFlashyArt(art);
 
   waitForButtonRelease();
   audioBegin();
 
-  TFT_eSprite frame(&display);
-  frame.setColorDepth(8);
-  frame.createSprite(screenW, screenH);
-  const bool useSprite = frame.created();
   gFrameBuffer =
-      useSprite ? static_cast<uint8_t*>(frame.getPointer()) : nullptr;
+      fullFrame ? static_cast<uint8_t*>(frame.getPointer()) : nullptr;
 
   level = &LEVELS[0];
   int16_t worldH = level->rows * TILE;  // physics "screenH": the world bottom
@@ -2165,26 +2182,42 @@ void runSuperFlashyBirds(TFT_eSPI& display) {
     }
     const int16_t cameraY = static_cast<int16_t>(cameraYf);
 
-    TFT_eSPI& target = useSprite ? static_cast<TFT_eSPI&>(frame) : display;
-    drawFrame(target, p, gorillas, cameraX, cameraY, worldH, hud);
-    if (levelDone) {
-      char title[40], levelTime[16], totalTime[16], times[40];
-      if (level->goldCount > 0) {
-        snprintf(title, sizeof(title), "Level %d complete!  Eggs %d/%d",
-                 levelIndex + 1, goldCount, level->goldCount);
-      } else {
-        snprintf(title, sizeof(title), "Level %d complete!", levelIndex + 1);
+    const auto drawScene = [&](TFT_eSPI& target) {
+      drawFrame(target, p, gorillas, cameraX, cameraY, worldH, hud);
+      if (levelDone) {
+        char title[40], levelTime[16], totalTime[16], times[40];
+        if (level->goldCount > 0) {
+          snprintf(title, sizeof(title), "Level %d complete!  Eggs %d/%d",
+                   levelIndex + 1, goldCount, level->goldCount);
+        } else {
+          snprintf(title, sizeof(title), "Level %d complete!", levelIndex + 1);
+        }
+        formatTime(levelTime, sizeof(levelTime), levelMs);
+        formatTime(totalTime, sizeof(totalTime), totalMs);
+        snprintf(times, sizeof(times), "Level %s   Total %s", levelTime,
+                 totalTime);
+        const bool last = levelIndex + 1 == LEVEL_COUNT;
+        drawBanner(target, title, times,
+                   last ? "All done! Back to level 1" : "Loading next level");
+      } else if (gameOver) {
+        drawBanner(target, "Game over", "Out of lives", "Back to level 1");
       }
-      formatTime(levelTime, sizeof(levelTime), levelMs);
-      formatTime(totalTime, sizeof(totalTime), totalMs);
-      snprintf(times, sizeof(times), "Level %s   Total %s", levelTime, totalTime);
-      const bool last = levelIndex + 1 == LEVEL_COUNT;
-      drawBanner(target, title, times,
-                 last ? "All done! Back to level 1" : "Loading next level");
-    } else if (gameOver) {
-      drawBanner(target, "Game over", "Out of lives", "Back to level 1");
+    };
+    if (fullFrame) {
+      drawScene(frame);
+      frame.pushSprite(0, 0);
+    } else if (frame.created()) {
+      for (int16_t top = 0; top < screenH; top += stripRows) {
+        frame.resetViewport();
+        frame.fillSprite(TFT_BLACK);
+        frame.setViewport(0, -top, screenW, screenH, true);
+        drawScene(frame);
+        frame.resetViewport();
+        frame.pushSprite(0, top);
+      }
+    } else {
+      drawScene(display);
     }
-    if (useSprite) frame.pushSprite(0, 0);
 
     if (levelDone || gameOver) {
       audioPlayTone(gameOver ? 160 : 1320, gameOver ? 300 : 80);

@@ -99,10 +99,14 @@ bool takePreloadedGameAssets(FlappyAssets& flappy, SuperFlashyAssets& super);
 // remains visible while Wi-Fi/GitHub is unavailable and while files download.
 bool ensureGameAssets(TFT_eSPI& display);
 
-bool loadFlappyAssets(FlappyAssets& assets, bool night = false);
+bool loadFlappyAssets(FlappyAssets& assets, bool night = false,
+                      bool withBackground = true);
+// One cached file. width and height of 0 accept the manifest's size.
+bool loadGameAssetImage(const char* path, const char* format,
+                        GameAssetImage& image);
 // Swap only the background of loaded assets, reusing its memory.
 bool switchFlappyBackground(FlappyAssets& assets, bool night);
-bool loadSuperFlashyAssets(SuperFlashyAssets& assets);
+bool loadSuperFlashyAssets(SuperFlashyAssets& assets, bool withSky = true);
 // Sky plus the few sprites the game-menu tiles draw.
 bool loadSuperFlashyMenuArt(SuperFlashyAssets& assets);
 // Point the game sprite names at a loaded set. Empty images become null.

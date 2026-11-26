@@ -3,8 +3,9 @@
 // Draw mode   BTN1 left, BTN2 up, BTN3 down, BTN4 right (hold to repeat).
 //             Double-tap BTN2 (up): pen down / pen up.
 //             Double-tap BTN1: open / close tool mode.
+//             Double-tap BTN4 with the pen up: exit back to the game menu.
 // Tool mode   BTN1 next tool, BTN2 next size/option, BTN3 colour map.
-//             Double-tap BTN1: close.  Hold BTN4 for 3 seconds: exit game.
+//             BTN4: exit back to the game menu.  Double-tap BTN1: close.
 // Colour mode BTN1/2/3/4 move left/up/down/right through the colour map.
 //             Double-tap BTN1: pick the colour.  Double-tap BTN2: cancel.
 //
@@ -36,7 +37,6 @@ constexpr uint32_t TAP_MAX_MS = 250;      // a tap is released this fast
 constexpr uint32_t REPEAT_DELAY_MS = 280;
 constexpr uint32_t DRAW_REPEAT_MS = 16;
 constexpr uint32_t COLOR_REPEAT_MS = 110;
-constexpr uint32_t EXIT_HOLD_MS = 3000;
 constexpr uint32_t HINT_MS = 3500;
 
 constexpr int16_t PANEL_H = 50;
@@ -79,6 +79,7 @@ State st;
 Mode mode = Mode::Draw;
 uint8_t color = BLACK332;
 bool penDown = false;
+bool requestExit = false;
 int16_t anchorX = 0, anchorY = 0;
 
 int16_t dMinX, dMinY, dMaxX, dMaxY;  // dirty rectangle (canvas -> screen)
@@ -470,21 +471,14 @@ void drawToolPanel() {
   d.drawRect(267, 21, 50, 15, TFT_WHITE);
 }
 
-void drawToolHint(uint32_t exitHeld) {
+void drawToolHint() {
   TFT_eSPI& d = *tft;
   d.fillRect(0, 38, W, PANEL_H - 39, PANEL_BG);
-  if (exitHeld > 0) {
-    const int16_t full = W - 40;
-    d.drawRect(19, 40, full + 2, 8, TFT_WHITE);
-    d.fillRect(20, 41, full * min<uint32_t>(exitHeld, EXIT_HOLD_MS) /
-                           EXIT_HOLD_MS, 6, TFT_YELLOW);
-    return;
-  }
   d.setTextFont(1);
   d.setTextSize(1);
   d.setTextDatum(MC_DATUM);
   d.setTextColor(0xB5B6, PANEL_BG);
-  d.drawString("1 Tool  2 Size  3 Color  Dbl1 Close  Hold4 Exit", W / 2, 43);
+  d.drawString("1 Tool  2 Size  3 Color  4 Exit  Dbl1 Close", W / 2, 43);
 }
 
 void drawMapCell(int8_t cx, int8_t cy, bool selected) {
@@ -540,7 +534,7 @@ void showHint() {
   d.setTextSize(1);
   d.setTextDatum(MC_DATUM);
   d.setTextColor(TFT_WHITE, TFT_BLACK);
-  d.drawString("Dbl 2: pen on/off    Dbl 1: tools", W / 2, H - 8);
+  d.drawString("Dbl2 pen   Dbl1 tools   Dbl4 exit", W / 2, H - 8);
 }
 
 // ------------------------------------------------------------ mode logic
@@ -593,7 +587,7 @@ void enterTools() {
   mode = Mode::Tools;
   updateOverlays();
   drawToolPanel();
-  drawToolHint(0);
+  drawToolHint();
 }
 
 void leaveTools() {
@@ -611,7 +605,7 @@ void leaveColor() {
   mode = Mode::Tools;
   blit(0, 0, W - 1, H - 1);
   drawToolPanel();
-  drawToolHint(0);
+  drawToolHint();
 }
 
 void moveColorCell(int dx, int dy) {
@@ -635,7 +629,9 @@ void dirOf(Button b, int& dx, int& dy) {
 
 bool hasDoubleAction(Button b) {
   switch (mode) {
-    case Mode::Draw: return b == Button::Button1 || b == Button::Button2;
+    case Mode::Draw:
+      if (b == Button::Button4) return !penDown;
+      return b == Button::Button1 || b == Button::Button2;
     case Mode::Tools: return b == Button::Button1;
     default: return b == Button::Button1 || b == Button::Button2;
   }
@@ -657,6 +653,8 @@ void singlePress(Button b) {
       uint8_t& o = st.option[tool];
       o = (o + 1) % optionCount(st.tool);
       drawToolPanel();
+    } else if (b == Button::Button4) {
+      requestExit = true;
     } else if (b == Button::Button3) {
       st.cellX = st.cellY = 0;
       for (int i = 0; i < MAP_N * MAP_N; ++i) {
@@ -674,6 +672,7 @@ void singlePress(Button b) {
 void doublePress(Button b) {
   if (mode == Mode::Draw) {
     if (b == Button::Button2) togglePen();
+    else if (b == Button::Button4) requestExit = true;
     else enterTools();
   } else if (mode == Mode::Tools) {
     leaveTools();
@@ -727,6 +726,7 @@ void runGallery(TFT_eSPI& display) {
   mode = Mode::Draw;
   color = BLACK332;
   penDown = false;
+  requestExit = false;
   oldCursor.valid = oldPreview.valid = false;
 
   blit(0, 0, W - 1, H - 1);
@@ -737,7 +737,7 @@ void runGallery(TFT_eSPI& display) {
 
   // Input state.
   Button held = Button::None;
-  uint32_t pressTime = 0, lastRepeat = 0, lastBar = 0;
+  uint32_t pressTime = 0, lastRepeat = 0;
   bool repeatOk = false;
   Button tapButton = Button::None;
   uint32_t tapTime = 0;
@@ -755,7 +755,6 @@ void runGallery(TFT_eSPI& display) {
       if (held != Button::None) {  // release
         tapValid = !pressWasDouble && held == tapButton &&
                    now - tapTime < TAP_MAX_MS;
-        if (mode == Mode::Tools && held == Button::Button4) drawToolHint(0);
       }
       held = b;
       if (b != Button::None) {  // press
@@ -788,17 +787,7 @@ void runGallery(TFT_eSPI& display) {
           singlePress(b);
         }
       }
-    } else if (b != Button::None) {
-      // Held: auto-repeat movement, or the exit countdown in tool mode.
-      if (mode == Mode::Tools && b == Button::Button4) {
-        const uint32_t heldMs = now - pressTime;
-        if (heldMs >= EXIT_HOLD_MS) {
-          exiting = true;
-        } else if (heldMs > 250 && now - lastBar >= 60) {
-          lastBar = now;
-          drawToolHint(heldMs);
-        }
-      } else if (repeatOk && mode != Mode::Tools) {
+    } else if (b != Button::None && repeatOk && mode != Mode::Tools) {
         const uint32_t heldMs = now - pressTime;
         const uint32_t every =
             mode == Mode::Draw ? DRAW_REPEAT_MS : COLOR_REPEAT_MS;
@@ -814,8 +803,9 @@ void runGallery(TFT_eSPI& display) {
             moveColorCell(dx, dy);
           }
         }
-      }
     }
+
+    if (requestExit) exiting = true;
 
     if (hintShown && now > hintUntil) {
       blit(0, H - 16, W - 1, H - 1);

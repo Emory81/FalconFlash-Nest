@@ -2,12 +2,14 @@
 
 #include <Arduino.h>
 
+#include "display/battery_icon.h"
 #include "game_assets.h"
 #include "games/arcade_games.h"
 #include "games/flappy_bird.h"
 #include "games/gallery.h"
 #include "games/guitar_hero.h"
 #include "input/button_input.h"
+#include "power/battery_monitor.h"
 #include "super_flashy_birds.h"
 
 namespace {
@@ -236,6 +238,7 @@ void drawMenu(TFT_eSPI& display, uint8_t selectedIndex,
        slot < listedCount() && slot < (topRow + VISIBLE_ROWS) * 3; ++slot) {
     drawTile(display, slot, slot == selectedIndex, assets);
   }
+  drawBatteryIndicator(display, batteryPercent(), MENU_BG);
   drawFooter(display, canGoBack);
 }
 
@@ -313,6 +316,7 @@ bool showGameMenu(TFT_eSPI& display, bool canGoBack) {
   Button holding = Button::None;  // BTN3, or BTN4 when it can go back
   uint32_t pressedAt = 0;
   bool showingBar = false;
+  int8_t shownBattery = batteryPercent();
 
   // Move the highlight, redrawing everything only when the rows scroll.
   const auto moveTo = [&](uint8_t next) {
@@ -381,6 +385,11 @@ bool showGameMenu(TFT_eSPI& display, bool canGoBack) {
       } else if (held >= SELECT_MAX_MS) {
         drawHoldBar(display, showingBar, held, needed);
       }
+    }
+    const int8_t percent = batteryPercent();
+    if (percent != shownBattery && !showingBar) {
+      shownBattery = percent;
+      drawBatteryIndicator(display, percent, MENU_BG);
     }
     delay(10);
   }

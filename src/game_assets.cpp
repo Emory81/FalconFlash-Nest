@@ -791,7 +791,16 @@ bool ensureGameAssets(TFT_eSPI& display) {
   }
 }
 
-bool loadFlappyAssets(FlappyAssets& assets, bool night) {
+bool loadGameAssetImage(const char* path, const char* format,
+                        GameAssetImage& image) {
+  if (!initGameAssets()) return false;
+  static ManifestEntry entries[MAX_MANIFEST_ENTRIES];
+  size_t count = 0;
+  if (!loadManifestEntries(entries, count)) return false;
+  return loadOneImage(path, format, 0, 0, image, entries, count);
+}
+
+bool loadFlappyAssets(FlappyAssets& assets, bool night, bool withBackground) {
   assets.release();
   static ManifestEntry entries[MAX_MANIFEST_ENTRIES];
   size_t count = 0;
@@ -809,15 +818,17 @@ bool loadFlappyAssets(FlappyAssets& assets, bool night) {
       loadOneImage("flappy/pipe_body.rgb565", "rgb565", 28, 8,
                    assets.pipeBody, entries, count) &&
       loadOneImage("flappy/pipe_cap.rgb565", "rgb565", 32, 14,
-                   assets.pipeCap, entries, count) &&
-      loadOneImage(night ? "flappy/background_night.rgb332"
-                         : "flappy/background_day.rgb332",
-                   "rgb332", 320, 240, assets.background, entries, count);
+                   assets.pipeCap, entries, count);
+  if (ok && withBackground) {
+    ok = loadOneImage(night ? "flappy/background_night.rgb332"
+                            : "flappy/background_day.rgb332",
+                      "rgb332", 320, 240, assets.background, entries, count);
+  }
   if (!ok) assets.release();
   return ok;
 }
 
-bool loadSuperFlashyAssets(SuperFlashyAssets& assets) {
+bool loadSuperFlashyAssets(SuperFlashyAssets& assets, bool withSky) {
   assets.release();
   static ManifestEntry entries[MAX_MANIFEST_ENTRIES];
   size_t count = 0;
@@ -865,8 +876,10 @@ bool loadSuperFlashyAssets(SuperFlashyAssets& assets) {
       load("super/grassy_arrow_right.rgb565", "rgb565", assets.grassyArrowRight) &&
       load("super/grassy_arrow_left.rgb565", "rgb565", assets.grassyArrowLeft) &&
       load("super/grassy_arrow_up.rgb565", "rgb565", assets.grassyArrowUp) &&
-      load("super/grassy_arrow_down.rgb565", "rgb565", assets.grassyArrowDown) &&
-      load("super/sky.rle", "rle332", assets.sky);
+      load("super/grassy_arrow_down.rgb565", "rgb565", assets.grassyArrowDown);
+  if (ok && withSky) {
+    ok = load("super/sky.rle", "rle332", assets.sky);
+  }
   if (!ok) assets.release();
   return ok;
 }

@@ -8,6 +8,7 @@
 #include <cstdio>
 #include <cstring>
 
+#include "display/battery_icon.h"
 #include "game_assets.h"
 #include "input/button_input.h"
 #include "network/desk_data.h"
@@ -511,36 +512,10 @@ void drawWeatherBlock(TFT_eSPI& canvas, const DeskWeather& weather, uint16_t bg,
   }
 }
 
-void drawBatteryIndicator(TFT_eSPI& canvas, int8_t percent) {
-  if (percent < 0) {
-    return;
-  }
-  const uint16_t color = percent <= 15   ? TFT_RED
-                         : percent <= 30 ? TFT_YELLOW
-                                         : TFT_GREEN;
-  const int16_t x = 12;
-  const int16_t y = 9;
-  const int16_t bodyW = 22;
-  const int16_t bodyH = 11;
-  canvas.drawRoundRect(x, y, bodyW, bodyH, 2, TFT_LIGHTGREY);
-  canvas.fillRect(x + bodyW, y + 3, 2, bodyH - 6, TFT_LIGHTGREY);
-  const int16_t fillW = ((bodyW - 4) * percent) / 100;
-  if (fillW > 0) {
-    canvas.fillRect(x + 2, y + 2, fillW, bodyH - 4, color);
-  }
-  char text[8];
-  snprintf(text, sizeof(text), "%d%%", percent);
-  canvas.setTextFont(1);
-  canvas.setTextSize(1);
-  canvas.setTextDatum(ML_DATUM);
-  canvas.setTextColor(TFT_WHITE, DESK_BG);
-  canvas.drawString(text, x + bodyW + 8, y + bodyH / 2);
-}
-
 void drawClockWeather(TFT_eSPI& canvas, const DeskData& data, bool showHints,
                       bool pageLocked, const GameAssetImage& spotifyLogo) {
   drawHeader(canvas, "", 0, showHints, pageLocked);
-  drawBatteryIndicator(canvas, batteryPercent());
+  drawBatteryIndicator(canvas, batteryPercent(), DESK_BG);
   char timeText[16] = "--:--";
   char dateText[24] = "Syncing time...";
   formatDeskTime(timeText, sizeof(timeText), dateText, sizeof(dateText));

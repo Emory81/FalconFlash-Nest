@@ -17,6 +17,7 @@
 #include "games/game_menu.h"
 #include "input/button_input.h"
 #include "network/device_network.h"
+#include "power/battery_monitor.h"
 
 namespace {
 constexpr uint8_t BACKLIGHT_PIN = 21;
@@ -402,6 +403,9 @@ Button waitForPowerButton() {
 }
 
 void enterStandby(bool playShutdownSound) {
+  // Record the final voltage of this session before flash/audio take over.
+  batteryLogSessionEnd();
+  pauseBatteryLogging();
   if (playShutdownSound) {
     // Early timer cancel races the game-asset download/preload tasks; those
     // stretch delayMicroseconds() used by the DAC chime and make it distort.
@@ -1277,6 +1281,7 @@ void setup() {
                            : static_cast<Button>(otaResumeButton);
   // Kick WiFi immediately so connect overlaps splash + boot sound.
   startDeviceWiFi();
+  startBatteryMonitor();
 
   tft.init();
   tft.setRotation(DISPLAY_ROTATION);

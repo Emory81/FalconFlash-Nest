@@ -651,6 +651,13 @@ bool initGameAssets() {
   return true;
 }
 
+bool lockGameAssetsFilesystem(uint32_t timeoutMs) {
+  if (filesystemMutex == nullptr) return true;
+  return xSemaphoreTake(filesystemMutex, pdMS_TO_TICKS(timeoutMs)) == pdTRUE;
+}
+
+void unlockGameAssetsFilesystem() { unlockFilesystem(); }
+
 void startGameAssetPrefetch() {
   if (assetSyncTaskRunning) return;
   if (!filesystemReady && !initGameAssets()) return;

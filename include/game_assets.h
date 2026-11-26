@@ -87,3 +87,8 @@ bool ensureGameAssets(TFT_eSPI& display);
 bool loadFlappyAssets(FlappyAssets& assets, bool night = false);
 bool loadSuperFlashyAssets(SuperFlashyAssets& assets);
 bool loadDeskSpotifyLogo(GameAssetImage& logo);
+
+// Let other modules (e.g. the battery log) share the LittleFS cache safely.
+// Returns false if the lock could not be taken within the timeout.
+bool lockGameAssetsFilesystem(uint32_t timeoutMs);
+void unlockGameAssetsFilesystem();

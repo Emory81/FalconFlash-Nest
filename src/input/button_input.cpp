@@ -2,6 +2,8 @@
 
 #include <Arduino.h>
 
+#include "power/battery_monitor.h"
+
 namespace {
 constexpr uint8_t BUTTON_ADC_PIN = 35;
 constexpr uint8_t ADC_SAMPLE_COUNT = 8;
@@ -35,9 +37,11 @@ Button classifyReading(int reading) {
 
 int readAveragedAdc() {
   uint32_t total = 0;
+  batteryAdcAcquire();
   for (uint8_t sample = 0; sample < ADC_SAMPLE_COUNT; ++sample) {
     total += analogRead(BUTTON_ADC_PIN);
   }
+  batteryAdcRelease();
   return static_cast<int>(total / ADC_SAMPLE_COUNT);
 }
 }  // namespace

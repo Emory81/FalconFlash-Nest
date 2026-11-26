@@ -1080,16 +1080,21 @@ bool loadSuperFlashyMenuArt(SuperFlashyAssets& assets) {
                         GameAssetImage& image) {
     return loadOneImage(path, format, 0, 0, image, entries, count);
   };
-  const bool ok = load("super/sky.rle", "rle332", assets.sky) &&
-                  load("super/grass.rgb565", "rgb565", assets.grass) &&
+  // The sky is large. The tile only needs it when there is room, so a failed
+  // sky download must not throw away the bird and the ground.
+  const bool ok = load("super/grass.rgb565", "rgb565", assets.grass) &&
                   load("super/bird.rgb565", "rgb565", assets.bird) &&
                   load("super/walk0.rgb565", "rgb565", assets.walk[0]) &&
                   load("super/mystery.rgb565", "rgb565", assets.mystery) &&
                   load("super/box.rgb565", "rgb565", assets.box) &&
                   load("super/gold_egg.rgb565", "rgb565", assets.goldEgg) &&
                   load("super/red_gorilla.rgb565", "rgb565", assets.redGorilla);
-  if (!ok) assets.release();
-  return ok;
+  if (!ok) {
+    assets.release();
+    return false;
+  }
+  load("super/sky.rle", "rle332", assets.sky);
+  return true;
 }
 
 bool switchFlappyBackground(FlappyAssets& assets, bool night) {

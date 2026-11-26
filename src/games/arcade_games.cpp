@@ -65,11 +65,45 @@ class Session {
     return frame.created() ? static_cast<uint8_t*>(frame.getPointer()) : nullptr;
   }
 
+  void releaseBuffer() { frame.deleteSprite(); }
+
   // Try again after a large image has been freed.
   void reserveBuffer() {
     if (frame.created()) return;
     frame.setColorDepth(8);
     frame.createSprite(W, rows);
+    if (!frame.created() && rows > 80) {
+      rows = 80;
+      frame.createSprite(W, rows);
+    }
+  }
+
+  bool fullBuffer() { return frame.created() && rows >= H; }
+
+  // One push when the buffer is the whole screen. Shorter buffers are pushed
+  // in bands so the picture is never drawn straight onto the panel.
+  template <typename Scene>
+  void present(const Scene& scene) {
+    if (!frame.created()) {
+      scene(display);
+      drawExitBar(display);
+      return;
+    }
+    if (rows >= H) {
+      scene(frame);
+      drawExitBar(frame);
+      frame.pushSprite(0, 0);
+      return;
+    }
+    for (int16_t top = 0; top < H; top += rows) {
+      frame.resetViewport();
+      frame.fillSprite(TFT_BLACK);
+      frame.setViewport(0, -top, W, H, true);
+      scene(frame);
+      drawExitBar(frame);
+      frame.resetViewport();
+      frame.pushSprite(0, top);
+    }
   }
 
   // Where to draw this frame.
@@ -809,29 +843,36 @@ void runBrickBreaker(TFT_eSPI& display) {
 }
 
 void runRunner(TFT_eSPI& display) {
+  // The frame buffer has to come first. Loading the pictures first breaks the
+  // heap into pieces, the full screen no longer fits, and the run is then
+  // painted straight to the panel.
+  Session session(display);
   FlappyAssets assets;
   SuperFlashyAssets sprites;
-  // The building picture is not used here, and it is too big to keep beside
-  // the runner sprites and the frame buffer.
-  if (!loadFlappyAssets(assets, false, false) ||
-      !loadSuperFlashyAssets(sprites)) {
+  const auto loadArt = [&]() {
+    return loadFlappyAssets(assets, false, false) &&
+           loadSuperFlashyAssets(sprites);
+  };
+  if (!loadArt()) {
+    session.releaseBuffer();
     assets.release();
     sprites.release();
-    display.fillScreen(TFT_BLACK);
-    display.setTextDatum(MC_DATUM);
-    display.setTextColor(TFT_WHITE, TFT_BLACK);
-    display.drawString("Game art unavailable", display.width() / 2,
-                       display.height() / 2);
-    delay(1200);
-    return;
-  }
-  bindSuperFlashyArt(sprites);
-  Session session(display);
-  if (session.buffer() == nullptr) {
-    sprites.sky.release();
-    bindSuperFlashyArt(sprites);
+    if (!loadArt()) {
+      display.fillScreen(TFT_BLACK);
+      display.setTextDatum(MC_DATUM);
+      display.setTextColor(TFT_WHITE, TFT_BLACK);
+      display.drawString("Game art unavailable", display.width() / 2,
+                         display.height() / 2);
+      delay(1200);
+      return;
+    }
     session.reserveBuffer();
   }
+  if (!session.fullBuffer()) {
+    sprites.sky.release();
+    session.reserveBuffer();
+  }
+  bindSuperFlashyArt(sprites);
   uint32_t best = loadRunnerBest();
   float x = RUNNER_X;
   Obstacle obstacles[4] = {};
@@ -918,58 +959,58 @@ void runRunner(TFT_eSPI& display) {
       }
     }
 
-    TFT_eSPI& d = session.canvas();
-    if (session.buffer() != nullptr && sfbSkyRuns != nullptr) {
-      copySuperFlashySky(session.buffer(),
-                         static_cast<int32_t>(distance / 4) % W);
-    } else {
-      d.fillRect(0, 0, W, H, 0x5DFF);
-    }
-    const int16_t scroll = static_cast<int32_t>(distance) % 16;
-    for (int16_t gx = -scroll; gx < W; gx += 16) {
-      drawArt(d, gx, GROUND_Y, 16, 16, sfbGrass);
-      for (int16_t gy = GROUND_Y + 16; gy < H; gy += 16) {
-        drawArt(d, gx, gy, 16, 16, sfbDirt);
-      }
-    }
-    for (const auto& o : obstacles) {
-      if (!o.active) continue;
-      const int16_t ox = static_cast<int16_t>(o.x + sway(o));
-      if (o.flying) {  // facing the bird it is flying at
-        const uint16_t* const frames[] = {assets.birdOpen.pixels(),
-                                          assets.birdTransition.pixels(),
-                                          assets.birdClosed.pixels()};
-        const uint16_t* wing =
-            frames[flap[(static_cast<int32_t>(distance) / 24) % 4]];
-        if (wing != nullptr) {
-          drawArt(d, ox - 1, GROUND_Y - FLY_HEIGHT - FALCON + 5, FALCON_ART,
-                  FALCON_ART, wing, true, FALCON, FALCON);
-        }
+    session.present([&](TFT_eSPI& d) {
+      if (session.fullBuffer() && sfbSkyRuns != nullptr) {
+        copySuperFlashySky(session.buffer(),
+                           static_cast<int32_t>(distance / 4) % W);
       } else {
-        for (int16_t gx = 0; gx < o.w; gx += sfbGorillaWidth) {
-          drawArt(d, ox + gx, GROUND_Y - o.h, sfbGorillaWidth,
-                  sfbGorillaHeight, o.red ? sfbRedGorilla : sfbGorilla);
+        d.fillRect(0, 0, W, H, 0x5DFF);
+      }
+      const int16_t scroll = static_cast<int32_t>(distance) % 16;
+      for (int16_t gx = -scroll; gx < W; gx += 16) {
+        drawArt(d, gx, GROUND_Y, 16, 16, sfbGrass);
+        for (int16_t gy = GROUND_Y + 16; gy < H; gy += 16) {
+          drawArt(d, gx, gy, 16, 16, sfbDirt);
         }
       }
-    }
-    if (ducking) {
-      drawArt(d, static_cast<int16_t>(x) + 16 - sfbDuckWidth / 2,
-              static_cast<int16_t>(y) - sfbDuckHeight, sfbDuckWidth,
-              sfbDuckHeight, sfbDuck);
-    } else {
-      const uint16_t* art =
-          y < GROUND_Y ? sfbWalk1 : walk[static_cast<int>(stride) % 8];
-      drawArt(d, static_cast<int16_t>(x), static_cast<int16_t>(y) - 32, 32, 32,
-              art);
-    }
-    char hud[32];
-    snprintf(hud, sizeof(hud), "Score %lu   Best %lu",
-             static_cast<unsigned long>(distance / 10),
-             static_cast<unsigned long>(best));
-    text(d, hud, W - 6, 10, TFT_BLACK, 1, MR_DATUM);
-    text(d, "3 jump   hold 2 duck   1/4 nudge", W / 2, H - 10, TFT_WHITE);
-    if (over) banner(d, "Game over", "BTN3: run again");
-    session.show();
+      for (const auto& o : obstacles) {
+        if (!o.active) continue;
+        const int16_t ox = static_cast<int16_t>(o.x + sway(o));
+        if (o.flying) {  // facing the bird it is flying at
+          const uint16_t* const frames[] = {assets.birdOpen.pixels(),
+                                            assets.birdTransition.pixels(),
+                                            assets.birdClosed.pixels()};
+          const uint16_t* wing =
+              frames[flap[(static_cast<int32_t>(distance) / 24) % 4]];
+          if (wing != nullptr) {
+            drawArt(d, ox - 1, GROUND_Y - FLY_HEIGHT - FALCON + 5, FALCON_ART,
+                    FALCON_ART, wing, true, FALCON, FALCON);
+          }
+        } else {
+          for (int16_t gx = 0; gx < o.w; gx += sfbGorillaWidth) {
+            drawArt(d, ox + gx, GROUND_Y - o.h, sfbGorillaWidth,
+                    sfbGorillaHeight, o.red ? sfbRedGorilla : sfbGorilla);
+          }
+        }
+      }
+      if (ducking) {
+        drawArt(d, static_cast<int16_t>(x) + 16 - sfbDuckWidth / 2,
+                static_cast<int16_t>(y) - sfbDuckHeight, sfbDuckWidth,
+                sfbDuckHeight, sfbDuck);
+      } else {
+        const uint16_t* art =
+            y < GROUND_Y ? sfbWalk1 : walk[static_cast<int>(stride) % 8];
+        drawArt(d, static_cast<int16_t>(x), static_cast<int16_t>(y) - 32, 32,
+                32, art);
+      }
+      char hud[32];
+      snprintf(hud, sizeof(hud), "Score %lu   Best %lu",
+               static_cast<unsigned long>(distance / 10),
+               static_cast<unsigned long>(best));
+      text(d, hud, W - 6, 10, TFT_BLACK, 1, MR_DATUM);
+      text(d, "3 jump   hold 2 duck   1/4 nudge", W / 2, H - 10, TFT_WHITE);
+      if (over) banner(d, "Game over", "BTN3: run again");
+    });
   }
   // Quitting in the middle of a run still counts it.
   if (distance / 10 > best) saveRunnerBest(distance / 10);

@@ -10,6 +10,7 @@
 
 #include "display/battery_icon.h"
 #include "game_assets.h"
+#include "games/game_menu.h"
 #include "input/button_input.h"
 #include "network/desk_data.h"
 #include "power/battery_monitor.h"
@@ -200,8 +201,8 @@ void drawHeader(TFT_eSPI& canvas, const char* title, uint8_t page,
     canvas.setTextSize(1);
     canvas.setTextDatum(BC_DATUM);
     canvas.setTextColor(DESK_SUBTEXT, DESK_BG);
-    canvas.drawString(pageLocked ? "BTN1 Unlock      BTN4 Off"
-                                 : "BTN1 Lock        BTN4 Off",
+    canvas.drawString(pageLocked ? "1 Unlock   3 Games   4 Off"
+                                 : "1 Lock   3 Games   4 Off",
                       canvas.width() / 2, canvas.height() - 5);
     if (pageLocked) {
       drawTinyLockIcon(canvas, canvas.width() - 18, canvas.height() - 15,
@@ -723,6 +724,22 @@ void runDeskMode(TFT_eSPI& display) {
         nextPageAt = millis() + PAGE_ROTATE_MS;
       }
       pageDirty = true;
+    }
+    if (button == Button::Button3) {
+      frame.deleteSprite();
+      releaseDeskSpotifyArt(data.spotify);
+      waitForButtonRelease();
+      const bool powerOff = showGameMenu(display, true);
+      if (powerOff) {
+        spotifyLogo.release();
+        return;
+      }
+      pageDirty = true;
+      spotifyArtDirty = true;
+      lastDrawnArt = nullptr;
+      lastSpotifyFillW = -1;
+      showHints = true;
+      lastInteractionAt = millis();
     }
     if (!pageLocked && millis() >= nextPageAt) {
       page = (page + 1) % PAGE_COUNT;

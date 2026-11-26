@@ -623,6 +623,8 @@ void bumpHead(Player& p, int16_t screenH) {
 // World y of the top of the screen. The world scrolls vertically for levels
 // taller than the screen; every world draw goes through this offset.
 int16_t gCameraY = 0;
+int16_t gClipTop = 0;
+int16_t gClipBottom = 32767;
 
 // True when the bird could stand up where it is: nothing solid (tile or box)
 // in the extra height a standing bird takes above a crouching one. When this
@@ -657,9 +659,15 @@ void drawScaled(TFT_eSPI& d, int16_t x, int16_t y, int16_t w, int16_t h,
                 int16_t scale, bool upsideDown = false) {
   // Nearest-neighbor draw of a w x h sprite, scale wide and destH tall.
   y -= gCameraY;
+  if (pixels == nullptr) return;
+  if (y + destH <= gClipTop || y >= gClipBottom) return;
   if (y + destH <= 0 || y >= d.height()) return;  // off screen
   const int16_t destW = w * scale;
-  for (int16_t dy = 0; dy < destH; ++dy) {
+  int16_t firstRow = 0;
+  int16_t lastRow = destH;
+  if (y < gClipTop) firstRow = gClipTop - y;
+  if (y + destH > gClipBottom) lastRow = gClipBottom - y;
+  for (int16_t dy = firstRow; dy < lastRow; ++dy) {
     const int16_t sy = upsideDown ? h - 1 - dy * h / destH : dy * h / destH;
     int16_t runStart = -1;
     uint16_t runColor = 0;
@@ -1748,6 +1756,10 @@ void copySuperFlashySky(uint8_t* frame, int16_t offset) {
 
 void drawSuperFlashySkyThumbnail(TFT_eSPI& d, int16_t x, int16_t y, int16_t w,
                                  int16_t h) {
+  if (sfbSkyRuns == nullptr || sfbSkyRows == nullptr) {
+    d.fillRect(x, y, w, h, 0x5DFF);
+    return;
+  }
   uint8_t line[sfbSkyWidth];
   for (int16_t dy = 0; dy < h; ++dy) {
     skyRow(dy * sfbSkyHeight / h, line);
@@ -1821,9 +1833,16 @@ void runSuperFlashyBirds(TFT_eSPI& display) {
   bool fullFrame = frame.created();
   int16_t stripRows = screenH;
   if (!fullFrame) {
-    stripRows = 60;
-    frame.setColorDepth(8);
-    frame.createSprite(screenW, stripRows);
+    // Wider strips mean fewer passes. 120 rows is half a screen.
+    const int16_t choices[] = {120, 80, 48};
+    for (int16_t rows : choices) {
+      frame.setColorDepth(8);
+      frame.createSprite(screenW, rows);
+      if (frame.created()) {
+        stripRows = rows;
+        break;
+      }
+    }
   }
   bindSuperFlashyArt(art);
 
@@ -2204,10 +2223,15 @@ void runSuperFlashyBirds(TFT_eSPI& display) {
       }
     };
     if (fullFrame) {
+      gClipTop = 0;
+      gClipBottom = screenH;
       drawScene(frame);
       frame.pushSprite(0, 0);
     } else if (frame.created()) {
+      // Each strip draws only its own rows, so the frame costs one pass.
       for (int16_t top = 0; top < screenH; top += stripRows) {
+        gClipTop = top;
+        gClipBottom = top + stripRows;
         frame.resetViewport();
         frame.fillSprite(TFT_BLACK);
         frame.setViewport(0, -top, screenW, screenH, true);
@@ -2215,7 +2239,11 @@ void runSuperFlashyBirds(TFT_eSPI& display) {
         frame.resetViewport();
         frame.pushSprite(0, top);
       }
+      gClipTop = 0;
+      gClipBottom = screenH;
     } else {
+      gClipTop = 0;
+      gClipBottom = screenH;
       drawScene(display);
     }
 

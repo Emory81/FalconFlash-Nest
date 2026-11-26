@@ -17,3 +17,5 @@ struct DeviceConfig {
 // seeds these values once; OTA builds only read the existing values.
 bool initDeviceConfig();
 const DeviceConfig& deviceConfig();
+// Drop pairing, API, and update strings. Game files keep their own address.
+void releaseDeviceConfigForGames();

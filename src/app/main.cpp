@@ -397,7 +397,11 @@ Button waitForPowerButton() {
   while (true) {
     const Button button = readButtonEvent();
     if (button != Button::None) {
-      startDeviceWiFi();
+      // Game Mode uses the radio only while it checks for an update and
+      // missing game files. Ordering still connects as soon as it wakes.
+      if (!deviceConfig().gameModeOnly) {
+        startDeviceWiFi();
+      }
       waitForButtonRelease();
       return button;
     }
@@ -787,6 +791,7 @@ void showGamesFromTimeline(TFT_eSprite& screen, bool& useSprite,
   if (showGameMenu(tft, true)) {
     enterStandby(true);  // held BTN3: turn off
   }
+  startDeviceWiFi();
 
   // Recreate the timeline buffer after the game has released its buffer.
   useSprite = createTimelineSprite(screen);
@@ -1285,7 +1290,11 @@ void setup() {
       otaResumeButton == 0 ? waitForPowerButton()
                            : static_cast<Button>(otaResumeButton);
   // Kick WiFi immediately so connect overlaps splash + boot sound.
-  startDeviceWiFi();
+  // Game Mode waits until after the boot sound, then only long enough to
+  // update and fetch missing pictures.
+  if (!deviceConfig().gameModeOnly) {
+    startDeviceWiFi();
+  }
   startBatteryMonitor();
 
   tft.init();
@@ -1294,13 +1303,15 @@ void setup() {
   drawSplashScreen();
   digitalWrite(BACKLIGHT_PIN, HIGH);
   playBootSound();
-  const bool demoMode = detectDemoMode();
   if (deviceConfig().gameModeOnly) {
+    startDeviceWiFi();
     checkForFirmwareUpdate(tft, static_cast<uint8_t>(wakeButton));
-    showGameMenu(tft, false);  // nothing to go back to
+    showGameMenu(tft, false, true);  // nothing to go back to
     enterStandby(true);
     return;
   }
+
+  const bool demoMode = detectDemoMode();
 
   if (demoMode) {
     checkForFirmwareUpdate(tft, static_cast<uint8_t>(wakeButton));

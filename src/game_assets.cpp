@@ -16,6 +16,7 @@
 #include <cstring>
 
 #include "device_config.h"
+#include "network/device_network.h"
 #include "super_flashy_art.h"
 
 namespace {
@@ -290,6 +291,9 @@ bool fileMatchesPath(const String& path, const ManifestEntry& entry) {
       break;
     }
     total += read;
+    // A full-cache check can run for seconds. Let the idle task run so the
+    // watchdog does not reset the device while the screen says Finalizing.
+    if ((total & 0xfff) < read) delay(1);
   }
   if (ok && mbedtls_sha256_finish_ret(&context, digest) != 0) ok = false;
   file.close();
@@ -563,6 +567,7 @@ bool loadImage(const ManifestEntry* entries, size_t count, const char* path,
       break;
     }
     total += read;
+    if ((total & 0xfff) < read) delay(1);
   }
   if (file) file.close();
   unlockFilesystem();
@@ -773,6 +778,7 @@ bool ensureGameAssets(TFT_eSPI& display) {
         progressScreenReady = false;
         return true;
       }
+      startDeviceWiFi();
       drawAssetProgress(display, "Waiting for Wi-Fi...", 0, 0);
       delay(250);
       continue;
@@ -806,24 +812,27 @@ bool loadFlappyAssets(FlappyAssets& assets, bool night, bool withBackground) {
   size_t count = 0;
   if (!loadManifestEntries(entries, count)) return false;
 
-  bool ok =
-      loadOneImage("flappy/bird_closed.rgb565", "rgb565", 48, 48,
-                   assets.birdClosed, entries, count) &&
-      loadOneImage("flappy/bird_back.rgb565", "rgb565", 48, 48,
-                   assets.birdBack, entries, count) &&
-      loadOneImage("flappy/bird_transition.rgb565", "rgb565", 48, 48,
-                   assets.birdTransition, entries, count) &&
-      loadOneImage("flappy/bird_open.rgb565", "rgb565", 48, 48,
-                   assets.birdOpen, entries, count) &&
-      loadOneImage("flappy/pipe_body.rgb565", "rgb565", 28, 8,
-                   assets.pipeBody, entries, count) &&
-      loadOneImage("flappy/pipe_cap.rgb565", "rgb565", 32, 14,
-                   assets.pipeCap, entries, count);
-  if (ok && withBackground) {
+  // The background is the one large block. Take it before the smaller
+  // sprites so those cannot split the only free gap that fits it.
+  bool ok = true;
+  if (withBackground) {
     ok = loadOneImage(night ? "flappy/background_night.rgb332"
                             : "flappy/background_day.rgb332",
                       "rgb332", 320, 240, assets.background, entries, count);
   }
+  ok = ok &&
+       loadOneImage("flappy/bird_closed.rgb565", "rgb565", 48, 48,
+                    assets.birdClosed, entries, count) &&
+       loadOneImage("flappy/bird_back.rgb565", "rgb565", 48, 48,
+                    assets.birdBack, entries, count) &&
+       loadOneImage("flappy/bird_transition.rgb565", "rgb565", 48, 48,
+                    assets.birdTransition, entries, count) &&
+       loadOneImage("flappy/bird_open.rgb565", "rgb565", 48, 48,
+                    assets.birdOpen, entries, count) &&
+       loadOneImage("flappy/pipe_body.rgb565", "rgb565", 28, 8,
+                    assets.pipeBody, entries, count) &&
+       loadOneImage("flappy/pipe_cap.rgb565", "rgb565", 32, 14,
+                    assets.pipeCap, entries, count);
   if (!ok) assets.release();
   return ok;
 }

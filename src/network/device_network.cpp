@@ -694,6 +694,14 @@ String nextEventId() {
 }
 }  // namespace
 
+void suspendDeviceWiFi() {
+  WiFi.disconnect(true);
+  WiFi.mode(WIFI_OFF);
+  wifiStarted = false;
+  wifiHintActive = false;
+  delay(50);
+}
+
 void startDeviceWiFi() {
   if (wifiStarted) {
     return;

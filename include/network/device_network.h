@@ -6,6 +6,9 @@
 #include <TFT_eSPI.h>
 
 void startDeviceWiFi();
+// Drop the Wi-Fi stack so a game can use that memory. startDeviceWiFi()
+// brings it back.
+void suspendDeviceWiFi();
 bool deviceWiFiConnected();
 bool checkForFirmwareUpdate(TFT_eSPI& display, uint8_t wakeButtonNumber);
 uint8_t takeOtaResumeButton();

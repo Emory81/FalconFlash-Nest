@@ -80,4 +80,6 @@ void initDeskClock();
 bool formatDeskTime(char* timeText, size_t timeSize, char* dateText,
                     size_t dateSize);
 void releaseDeskSpotifyArt(DeskSpotify& spotify);
+// Free every heap buffer Desk Mode is holding and mark each feed stale.
+void releaseDeskData(DeskData& data);
 void refreshDeskData(DeskData& data, bool force = false);

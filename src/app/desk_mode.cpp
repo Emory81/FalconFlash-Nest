@@ -13,6 +13,7 @@
 #include "games/game_menu.h"
 #include "input/button_input.h"
 #include "network/desk_data.h"
+#include "network/device_network.h"
 #include "power/battery_monitor.h"
 
 namespace {
@@ -727,16 +728,20 @@ void runDeskMode(TFT_eSPI& display) {
     }
     if (button == Button::Button3) {
       frame.deleteSprite();
-      releaseDeskSpotifyArt(data.spotify);
+      spotifyLogo.release();
+      releaseDeskData(data);
+      lastSpotifyTrack = static_cast<const char*>(nullptr);
+      lastSpotifyArtists = static_cast<const char*>(nullptr);
+      lastWeatherCondition = static_cast<const char*>(nullptr);
+      lastDrawnArt = nullptr;
       waitForButtonRelease();
       const bool powerOff = showGameMenu(display, true);
-      if (powerOff) {
-        spotifyLogo.release();
-        return;
-      }
+      if (powerOff) return;
+      drawLoading(display);
+      startDeviceWiFi();
+      loadDeskSpotifyLogo(spotifyLogo);
       pageDirty = true;
       spotifyArtDirty = true;
-      lastDrawnArt = nullptr;
       lastSpotifyFillW = -1;
       showHints = true;
       lastInteractionAt = millis();

@@ -100,3 +100,14 @@ bool initDeviceConfig() {
 const DeviceConfig& deviceConfig() {
   return config;
 }
+
+void releaseDeviceConfigForGames() {
+  const auto release = [](String& value) {
+    value = static_cast<const char*>(nullptr);
+  };
+  release(config.factoryId);
+  release(config.factorySecret);
+  release(config.apiBaseUrl);
+  release(config.githubRepo);
+  release(config.firmwareAsset);
+}

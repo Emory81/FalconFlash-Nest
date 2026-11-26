@@ -2,6 +2,7 @@
 
 #include <Arduino.h>
 
+#include "device_config.h"
 #include "display/battery_icon.h"
 #include "game_assets.h"
 #include "games/arcade_games.h"
@@ -9,6 +10,7 @@
 #include "games/gallery.h"
 #include "games/guitar_hero.h"
 #include "input/button_input.h"
+#include "network/device_network.h"
 #include "power/battery_monitor.h"
 #include "super_flashy_birds.h"
 
@@ -149,6 +151,14 @@ void drawFlappyIcon(TFT_eSPI& display, const FlappyAssets& assets, int16_t x,
   constexpr int16_t CROP_W = 160;
   constexpr int16_t CROP_H = 116;
   uint8_t* const pixels = static_cast<uint8_t*>(picture.getPointer());
+  if (assets.background.data == nullptr || assets.background.width == 0) {
+    picture.fillSprite(0x5DFF);
+    drawScaledFlappySprite(picture, assets, (ICON_W - BIRD_SIZE) / 2,
+                           (ICON_H - BIRD_SIZE) / 2, BIRD_SIZE);
+    picture.pushSprite(x, y);
+    picture.deleteSprite();
+    return;
+  }
   for (int16_t destY = 0; destY < ICON_H; ++destY) {
     const int16_t sourceY = CROP_Y + destY * CROP_H / ICON_H;
     for (int16_t destX = 0; destX < ICON_W; ++destX) {
@@ -246,6 +256,10 @@ void drawMenu(TFT_eSPI& display, uint8_t selectedIndex,
 void loadMenuAssets(TFT_eSPI& display, FlappyAssets& assets) {
   while (!loadFlappyAssets(assets)) {
     assets.release();
+    // The sky picture is optional for the menu. Missing files are the only
+    // reason to run the downloader again; a failed allocation is not.
+    if (loadFlappyAssets(assets, false, false)) return;
+    assets.release();
     ensureGameAssets(display);
   }
 }
@@ -297,11 +311,15 @@ void launchSelectedGame(TFT_eSPI& display, uint8_t selectedIndex) {
 }
 }  // namespace
 
-bool showGameMenu(TFT_eSPI& display, bool canGoBack) {
+bool showGameMenu(TFT_eSPI& display, bool canGoBack, bool gamesOnly) {
   uint8_t selectedIndex = 0;
   topRow = 0;
   waitForButtonRelease();
   ensureGameAssets(display);
+  if (gamesOnly) releaseDeviceConfigForGames();
+  // Files are on flash now. The radio is the largest thing still sitting
+  // beside the menu and the games.
+  suspendDeviceWiFi();
 
   FlappyAssets assets;
   SuperFlashyAssets menuArt;

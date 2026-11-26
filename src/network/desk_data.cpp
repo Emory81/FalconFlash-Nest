@@ -671,6 +671,41 @@ void releaseDeskSpotifyArt(DeskSpotify& spotify) {
   spotify.artHeight = 0;
 }
 
+namespace {
+void releaseString(String& value) {
+  // A null assignment is the call that frees a heap buffer. An empty
+  // string keeps the old allocation.
+  value = static_cast<const char*>(nullptr);
+}
+}  // namespace
+
+void releaseDeskData(DeskData& data) {
+  releaseDeskSpotifyArt(data.spotify);
+  releaseString(data.weather.condition);
+  data.weather.valid = false;
+  data.weather.hasTemperature = false;
+  releaseString(data.meals.day);
+  releaseString(data.meals.breakfast);
+  releaseString(data.meals.lunch);
+  releaseString(data.meals.dinner);
+  data.meals.valid = false;
+  releaseString(data.spotify.track);
+  releaseString(data.spotify.artists);
+  releaseString(data.spotify.album);
+  data.spotify.valid = false;
+  data.spotify.linked = false;
+  data.spotify.isPlaying = false;
+  data.spotify.progressMs = 0;
+  data.spotify.durationMs = 0;
+  for (String& headline : data.headlines) releaseString(headline);
+  data.headlineCount = 0;
+  data.weatherFetchedAt = 0;
+  data.stocksFetchedAt = 0;
+  data.mealsFetchedAt = 0;
+  data.headlinesFetchedAt = 0;
+  data.spotifyFetchedAt = 0;
+}
+
 void initDeskClock() {
   if (clockStarted || !waitForWiFi()) {
     return;

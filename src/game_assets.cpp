@@ -549,7 +549,11 @@ bool loadImage(const ManifestEntry* entries, size_t count, const char* path,
     return false;
   }
 
-  uint8_t* data = static_cast<uint8_t*>(malloc(entry.size));
+  // An image that already holds a buffer of this size is read into it, so no
+  // new large block of memory has to be found.
+  const bool reuse = image.data != nullptr && image.size == entry.size;
+  uint8_t* data =
+      reuse ? image.data : static_cast<uint8_t*>(malloc(entry.size));
   if (data == nullptr) return false;
 
   const String cachedPath = cachePath(entry);
@@ -574,6 +578,7 @@ bool loadImage(const ManifestEntry* entries, size_t count, const char* path,
        hashesEqual(actual, entry.hash);
   if (!ok) {
     free(data);
+    if (reuse) image = GameAssetImage{};
     return false;
   }
 
@@ -852,6 +857,15 @@ bool loadSuperFlashyAssets(SuperFlashyAssets& assets) {
                    assets.eggOpen, entries, count);
   if (!ok) assets.release();
   return ok;
+}
+
+bool switchFlappyBackground(FlappyAssets& assets, bool night) {
+  static ManifestEntry entries[MAX_MANIFEST_ENTRIES];
+  size_t count = 0;
+  if (!loadManifestEntries(entries, count)) return false;
+  return loadOneImage(night ? "flappy/background_night.rgb332"
+                            : "flappy/background_day.rgb332",
+                      "rgb332", 320, 240, assets.background, entries, count);
 }
 
 bool loadDeskSpotifyLogo(GameAssetImage& logo) {

@@ -42,12 +42,16 @@ struct Input {
 // Frame pacing, button sampling, double buffering and hold-to-exit.
 class Session {
  public:
-  explicit Session(TFT_eSPI& screen, Button exitWith = Button::Button3)
-      : display(screen), frame(&screen), exitButton(exitWith) {
+  // bufferRows < H draws the screen in strips with showStrips(), for games
+  // that need most of the memory for something else.
+  explicit Session(TFT_eSPI& screen, Button exitWith = Button::Button3,
+                   int16_t bufferRows = H)
+      : display(screen), frame(&screen), exitButton(exitWith),
+        rows(bufferRows) {
     waitForButtonRelease();
     audioBegin();
     frame.setColorDepth(8);
-    frame.createSprite(W, H);
+    frame.createSprite(W, bufferRows);
   }
 
   ~Session() {
@@ -66,12 +70,34 @@ class Session {
     return frame.created() ? static_cast<TFT_eSPI&>(frame) : display;
   }
 
-  // Fill the screen with a W x H RGB332 picture.
-  void picture(const uint8_t* pixels) {
-    if (frame.created()) {
-      memcpy(frame.getPointer(), pixels, W * H);
-    } else {
-      display.pushImage(0, 0, W, H, const_cast<uint8_t*>(pixels), true);
+  // Draws one frame a strip at a time: the background (W x H, RGB332, or a
+  // plain color if null), then scene(canvas) in ordinary screen coordinates.
+  template <typename Scene>
+  void showStrips(const uint8_t* background, uint16_t plain,
+                  const Scene& scene) {
+    if (!frame.created()) {  // no memory even for a strip
+      if (background != nullptr) {
+        display.pushImage(0, 0, W, H, const_cast<uint8_t*>(background), true);
+      } else {
+        display.fillRect(0, 0, W, H, plain);
+      }
+      scene(display);
+      drawExitBar(display);
+      return;
+    }
+    for (int16_t top = 0; top < H; top += rows) {
+      frame.resetViewport();
+      if (background != nullptr) {
+        memcpy(frame.getPointer(), background + top * W, W * rows);
+      } else {
+        frame.fillSprite(plain);
+      }
+      // Shift the drawing up so this strip's part lands in the buffer.
+      frame.setViewport(0, -top, W, H, true);
+      scene(frame);
+      drawExitBar(frame);
+      frame.resetViewport();
+      frame.pushSprite(0, top);
     }
   }
 
@@ -104,26 +130,29 @@ class Session {
 
   // Shows the frame, with the exit bar on top while BTN3 is held.
   void show() {
-    TFT_eSPI& d = canvas();
-    if (heldMs >= EXIT_SHOW_MS) {
-      d.fillRoundRect(20, 8, W - 40, 22, 4, TFT_BLACK);
-      d.drawRoundRect(20, 8, W - 40, 22, 4, TFT_WHITE);
-      d.fillRect(24, 22, (W - 48) * heldMs / EXIT_HOLD_MS, 4, TFT_YELLOW);
-      d.setTextFont(1);
-      d.setTextSize(1);
-      d.setTextDatum(TC_DATUM);
-      d.setTextColor(TFT_WHITE, TFT_BLACK);
-      d.drawString(exitButton == Button::Button4 ? "Keep holding BTN4 to exit"
-                                                 : "Keep holding BTN3 to exit",
-                   W / 2, 12);
-    }
+    drawExitBar(canvas());
     if (frame.created()) frame.pushSprite(0, 0);
   }
 
  private:
+  void drawExitBar(TFT_eSPI& d) {
+    if (heldMs < EXIT_SHOW_MS) return;
+    d.fillRoundRect(20, 8, W - 40, 22, 4, TFT_BLACK);
+    d.drawRoundRect(20, 8, W - 40, 22, 4, TFT_WHITE);
+    d.fillRect(24, 22, (W - 48) * heldMs / EXIT_HOLD_MS, 4, TFT_YELLOW);
+    d.setTextFont(1);
+    d.setTextSize(1);
+    d.setTextDatum(TC_DATUM);
+    d.setTextColor(TFT_WHITE, TFT_BLACK);
+    d.drawString(exitButton == Button::Button4 ? "Keep holding BTN4 to exit"
+                                               : "Keep holding BTN3 to exit",
+                 W / 2, 12);
+  }
+
   TFT_eSPI& display;
   TFT_eSprite frame;
   Button exitButton;
+  int16_t rows;  // height of the frame buffer
   uint32_t lastFrame = 0;
   uint32_t since = 0;
   uint32_t heldMs = 0;
@@ -480,7 +509,9 @@ void runRockPaperScissors(TFT_eSPI& display, bool twoPlayer) {
   bool night = true;
   FlappyAssets assets;
   loadFlappyAssets(assets, night);
-  Session session(display, Button::Button4);  // BTN3 is a sign here
+  // BTN3 is a sign here. A whole-screen buffer does not fit beside the
+  // picture, so it is drawn in strips of 48 rows.
+  Session session(display, Button::Button4, 48);
   bool skipTap = false;  // this BTN4 press only closed the result
   // Second: two players, waiting for player 2's pick.
   enum class Phase : uint8_t { Choose, Second, Count, Reveal };
@@ -510,7 +541,7 @@ void runRockPaperScissors(TFT_eSPI& display, bool twoPlayer) {
     if (in.tap) {
       if (!skipTap) {
         night = !night;
-        loadFlappyAssets(assets, night);
+        switchFlappyBackground(assets, night);
       }
       skipTap = false;
     }
@@ -553,70 +584,66 @@ void runRockPaperScissors(TFT_eSPI& display, bool twoPlayer) {
       }
     }
 
-    TFT_eSPI& d = session.canvas();
-    if (assets.background.data != nullptr) {
-      session.picture(assets.background.data);
-    } else {
-      d.fillRect(0, 0, W, H, 0x0010);
-    }
-    // Dark panels keep the words readable over the picture.
-    d.fillRoundRect(70, 1, 160, 18, 4, TFT_BLACK);
-    d.drawRoundRect(70, 1, 160, 18, 4, TFT_WHITE);
-    if (phase != Phase::Reveal) {
-      d.fillRoundRect(50, 44, 220, 60, 6, TFT_BLACK);
-      d.drawRoundRect(50, 44, 220, 60, 6, TFT_WHITE);
-    } else {
-      d.fillRoundRect(30, 28, 260, 132, 6, TFT_BLACK);
-      d.drawRoundRect(30, 28, 260, 132, 6, TFT_WHITE);
-    }
-    char score[40];
-    snprintf(score, sizeof(score),
-             twoPlayer ? "P1 %u   P2 %u   Draw %u"
-                       : "You %u   CPU %u   Draw %u",
-             wins, losses, draws);
-    text(d, score, 150, 10, TFT_WHITE);
-    if (phase == Phase::Choose) {
-      text(d, twoPlayer ? "Player 1: pick" : "Pick your sign", W / 2, 60,
-           TFT_YELLOW, 2);
-      if (twoPlayer) text(d, "(player 2, look away)", W / 2, 90, TFT_WHITE);
-    } else if (phase == Phase::Second) {
-      text(d, "Player 2: pick", W / 2, 60, TFT_ORANGE, 2);
-      text(d, "(player 1, look away)", W / 2, 90, TFT_WHITE);
-    } else if (phase == Phase::Count) {
-      text(d, HAND_NAMES[min<uint8_t>(step, 2)], W / 2, 90, TFT_YELLOW, 3);
-    } else {
-      text(d, twoPlayer ? "P1" : "You", 80, 40, TFT_WHITE, 2);
-      text(d, twoPlayer ? "P2" : "CPU", 240, 40, TFT_WHITE, 2);
-      drawHand(d, mine, 80, 90);
-      drawHand(d, theirs, 240, 90);
-      text(d, HAND_NAMES[mine], 80, 125, TFT_WHITE);
-      text(d, HAND_NAMES[theirs], 240, 125, TFT_WHITE);
-      const bool first = mine == (theirs + 1) % 3;
-      text(d,
-           mine == theirs ? "Draw"
-           : twoPlayer    ? (first ? "P1 wins!" : "P2 wins!")
-                          : (first ? "You win!" : "You lose"),
-           W / 2, 148, TFT_YELLOW, 2);
-    }
-    for (uint8_t i = 0; i < 3; ++i) {
-      const int16_t x = 56 + i * 104;
-      d.fillRoundRect(x - 44, 164, 88, 70, 6, TFT_BLACK);
-      d.drawRoundRect(x - 44, 164, 88, 70, 6,
-                      (phase == Phase::Reveal ||
-                       (!twoPlayer && phase == Phase::Count)) &&
-                              mine == i
-                          ? TFT_YELLOW
-                          : TFT_WHITE);
-      drawHand(d, i, x, 190);
-      char label[20];
-      snprintf(label, sizeof(label), "BTN%u %s", i + 1, HAND_NAMES[i]);
-      text(d, label, x, 224, TFT_WHITE);
-    }
-    d.fillRoundRect(236, 1, 82, 18, 4, TFT_BLACK);
-    d.drawRoundRect(236, 1, 82, 18, 4, TFT_WHITE);
-    text(d, phase == Phase::Reveal ? "any: OK" : "4: day/night", 277, 10,
-         TFT_LIGHTGREY);
-    session.show();
+    const auto scene = [&](TFT_eSPI& d) {
+      // Dark panels keep the words readable over the picture.
+      d.fillRoundRect(70, 1, 160, 18, 4, TFT_BLACK);
+      d.drawRoundRect(70, 1, 160, 18, 4, TFT_WHITE);
+      if (phase != Phase::Reveal) {
+        d.fillRoundRect(50, 44, 220, 60, 6, TFT_BLACK);
+        d.drawRoundRect(50, 44, 220, 60, 6, TFT_WHITE);
+      } else {
+        d.fillRoundRect(30, 28, 260, 132, 6, TFT_BLACK);
+        d.drawRoundRect(30, 28, 260, 132, 6, TFT_WHITE);
+      }
+      char score[40];
+      snprintf(score, sizeof(score),
+               twoPlayer ? "P1 %u   P2 %u   Draw %u"
+                         : "You %u   CPU %u   Draw %u",
+               wins, losses, draws);
+      text(d, score, 150, 10, TFT_WHITE);
+      if (phase == Phase::Choose) {
+        text(d, twoPlayer ? "Player 1: pick" : "Pick your sign", W / 2, 60,
+             TFT_YELLOW, 2);
+        if (twoPlayer) text(d, "(player 2, look away)", W / 2, 90, TFT_WHITE);
+      } else if (phase == Phase::Second) {
+        text(d, "Player 2: pick", W / 2, 60, TFT_ORANGE, 2);
+        text(d, "(player 1, look away)", W / 2, 90, TFT_WHITE);
+      } else if (phase == Phase::Count) {
+        text(d, HAND_NAMES[min<uint8_t>(step, 2)], W / 2, 90, TFT_YELLOW, 3);
+      } else {
+        text(d, twoPlayer ? "P1" : "You", 80, 40, TFT_WHITE, 2);
+        text(d, twoPlayer ? "P2" : "CPU", 240, 40, TFT_WHITE, 2);
+        drawHand(d, mine, 80, 90);
+        drawHand(d, theirs, 240, 90);
+        text(d, HAND_NAMES[mine], 80, 125, TFT_WHITE);
+        text(d, HAND_NAMES[theirs], 240, 125, TFT_WHITE);
+        const bool first = mine == (theirs + 1) % 3;
+        text(d,
+             mine == theirs ? "Draw"
+             : twoPlayer    ? (first ? "P1 wins!" : "P2 wins!")
+                            : (first ? "You win!" : "You lose"),
+             W / 2, 148, TFT_YELLOW, 2);
+      }
+      for (uint8_t i = 0; i < 3; ++i) {
+        const int16_t x = 56 + i * 104;
+        d.fillRoundRect(x - 44, 164, 88, 70, 6, TFT_BLACK);
+        d.drawRoundRect(x - 44, 164, 88, 70, 6,
+                        (phase == Phase::Reveal ||
+                         (!twoPlayer && phase == Phase::Count)) &&
+                                mine == i
+                            ? TFT_YELLOW
+                            : TFT_WHITE);
+        drawHand(d, i, x, 190);
+        char label[20];
+        snprintf(label, sizeof(label), "BTN%u %s", i + 1, HAND_NAMES[i]);
+        text(d, label, x, 224, TFT_WHITE);
+      }
+      d.fillRoundRect(236, 1, 82, 18, 4, TFT_BLACK);
+      d.drawRoundRect(236, 1, 82, 18, 4, TFT_WHITE);
+      text(d, phase == Phase::Reveal ? "any: OK" : "4: day/night", 277, 10,
+           TFT_LIGHTGREY);
+    };
+    session.showStrips(assets.background.data, 0x0010, scene);
   }
   assets.release();
 }

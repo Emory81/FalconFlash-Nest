@@ -85,5 +85,7 @@ bool takePreloadedGameAssets(FlappyAssets& flappy, SuperFlashyAssets& super);
 bool ensureGameAssets(TFT_eSPI& display);
 
 bool loadFlappyAssets(FlappyAssets& assets, bool night = false);
+// Swap only the background of loaded assets, reusing its memory.
+bool switchFlappyBackground(FlappyAssets& assets, bool night);
 bool loadSuperFlashyAssets(SuperFlashyAssets& assets);
 bool loadDeskSpotifyLogo(GameAssetImage& logo);

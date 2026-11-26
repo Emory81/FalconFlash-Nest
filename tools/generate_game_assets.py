@@ -56,8 +56,22 @@ def convert_rgb565(path: Path, shade: float = 1.0) -> tuple[int, int, bytes]:
     return image.width, image.height, bytes(pixels)
 
 
-def convert_background(path: Path) -> tuple[int, int, bytes]:
-    image = cover_resize(Image.open(path).convert("RGB"),
+def compose_background(sky_path: Path) -> Image.Image:
+    """The Frey building has a transparent sky area: lay a sky behind it."""
+    building = Image.open(ART / "FreyDrawingBackground.png").convert("RGBA")
+    canvas = Image.new("RGBA", building.size)
+    canvas.alpha_composite(Image.open(sky_path).convert("RGBA"))
+    canvas.alpha_composite(building)
+    # Stray gaps neither layer covers take the color of the pixel above.
+    for y in range(canvas.height):
+        for x in range(canvas.width):
+            if canvas.getpixel((x, y))[3] < 255:
+                canvas.putpixel((x, y), canvas.getpixel((x, max(0, y - 1))))
+    return canvas
+
+
+def convert_background(sky_path: Path) -> tuple[int, int, bytes]:
+    image = cover_resize(compose_background(sky_path).convert("RGB"),
                          SCREEN_WIDTH, SCREEN_HEIGHT)
     buf = [[list(map(float, image.getpixel((x, y))))
             for x in range(image.width)] for y in range(image.height)]
@@ -100,10 +114,9 @@ ASSETS: list[tuple[str, Path, str, float]] = [
      "rgb565", 1.0),
     ("flappy/pipe_body.rgb565", ART / "PipeBodyRed.png", "rgb565", 1.0),
     ("flappy/pipe_cap.rgb565", ART / "PipeCapRed.png", "rgb565", 1.0),
-    ("flappy/background_day.rgb332",
-     ART / "FreyDrawingBackground.png", "rgb332", 1.0),
-    ("flappy/background_night.rgb332",
-     ART / "FreyDrawingBackgroundNight.png", "rgb332", 1.0),
+    # For backgrounds the source is the sky that goes behind the building.
+    ("flappy/background_day.rgb332", ART / "DaySky.png", "rgb332", 1.0),
+    ("flappy/background_night.rgb332", ART / "NightSky.png", "rgb332", 1.0),
     ("super/bird.rgb565", SUPER_ART / "FlashyBirdStandStill.png",
      "rgb565", 1.0),
     ("super/walk0.rgb565", SUPER_ART / "FlashyBirdLeftFootForward.png",
@@ -154,7 +167,19 @@ def main() -> None:
     ]
     total = 0
 
+    # The super/ files are left exactly as they are. Super Flashy Birds now
+    # builds its pictures into the firmware, and devices still running older
+    # firmware reject files whose sizes have changed.
+    previous = {}
+    if (OUT / "manifest.txt").exists():
+        for line in (OUT / "manifest.txt").read_text(encoding="utf-8").splitlines():
+            previous[line.split("|")[0]] = line
+
     for relative, source, format_name, shade in ASSETS:
+        if relative.startswith("super/") and relative in previous:
+            manifest.append(previous[relative])
+            total += (OUT / relative).stat().st_size
+            continue
         if format_name == "rgb332":
             width, height, data = convert_background(source)
         else:

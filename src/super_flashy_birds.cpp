@@ -6,8 +6,8 @@
 
 #include "audio/audio_helper.h"
 #include "input/button_input.h"
-#include "game_assets.h"
 #include "super_flashy_levels.h"
+#include "super_flashy_sprites.h"
 
 // Controls (one resistor-ladder ADC, so only one button reads at a time):
 //   BTN1 left, BTN4 right, BTN3 jump, BTN2 duck (fast-fall in the air).
@@ -17,8 +17,6 @@
 // jump: releasing a direction keeps the speed for MOMENTUM_GRACE_MS (long enough
 // to reach the jump button), and BTN1/BTN4 steer in the air.
 namespace {
-constexpr uint16_t SFB_TRANSPARENT = 0xF81F;
-const SuperFlashyAssets* runtimeAssets = nullptr;
 constexpr int16_t SCALE = 1;  // art pixels -> screen pixels (tiles match the 16 px boxes)
 constexpr int16_t TILE = 16 * SCALE;
 // The bird is drawn at its native art resolution (1:1) so it stays crisp and
@@ -44,7 +42,8 @@ constexpr int16_t MAX_ROWS = LEVEL_MAX_ROWS;  // tallest level, in tiles
 static_assert(TILE == 16, "levels/*.txt maps assume 16 px tiles");
 constexpr uint8_t MAX_GORILLAS = LEVEL_MAX_GORILLAS;
 constexpr uint8_t BOX_MAX = LEVEL_MAX_BOXES;
-constexpr uint8_t BOX_SLOTS = BOX_MAX + 1;  // the last slot holds the nest
+// The slots after the boxes hold the nests.
+constexpr uint8_t BOX_SLOTS = BOX_MAX + LEVEL_MAX_NESTS;
 constexpr uint8_t FOX_MAX = LEVEL_MAX_FOXES;
 
 const Level* level = &LEVELS[0];
@@ -52,24 +51,24 @@ const Level* level = &LEVELS[0];
 int16_t worldW() { return level->tiles * TILE; }
 
 constexpr uint16_t SKY = 0x5DFF;
-constexpr uint16_t CLOUD = TFT_WHITE;
 
 constexpr uint32_t FRAME_MS = 30;
 constexpr uint32_t DOUBLE_PRESS_MS = 500;
 constexpr uint32_t MOMENTUM_GRACE_MS = 350;
 constexpr uint32_t JUMP_BUFFER_MS = 120;
-constexpr float CROUCH_SPEED = 1.2f;  // slow walk while crouched
+constexpr float CROUCH_SPEED = 2.4f;  // walk while crouched
 constexpr float STOMP_BOUNCE = -8.0f;
 constexpr float PUSH_SPEED = 3.5f;  // knockback speed when a gorilla bumps the bird
 constexpr uint32_t EXIT_HOLD_MS = 3000;
 constexpr uint32_t EXIT_SHOW_MS = 1500;
 
 constexpr float GRAVITY = 0.7f;
-constexpr float JUMP_VELOCITY = -10.0f;
+constexpr float JUMP_VELOCITY = -11.1f;  // full jump peaks about 82 px up
 constexpr float JUMP_CUT_VELOCITY = -4.0f;  // released jump button early
 constexpr float MAX_FALL = 14.0f;
-constexpr float GLIDE_GRAVITY_FACTOR = 0.5f;  // pressing jump again midair
-constexpr float GLIDE_MAX_FALL_FACTOR = 0.5f;
+constexpr float GLIDE_GRAVITY_FACTOR = 0.5f / 3.0f;  // pressing jump again midair
+constexpr float GLIDE_MAX_FALL_FACTOR = 0.5f / 3.0f;
+constexpr float GLIDE_SPEED_FACTOR = 1.5f;  // horizontal speed while gliding
 constexpr float WALK_SPEED = 2.5f;
 constexpr float RUN_SPEED = 4.5f;
 constexpr float ACCEL = 0.5f;
@@ -126,14 +125,57 @@ bool solidTile(int16_t col, int16_t row) {
   return (level->solid[col] >> row) & 1u;
 }
 
+// ---- Direction blocks -------------------------------------------------------
+// One-way tiles: they stop the bird only when it moves against their arrow (a
+// right block stops leftward movement, an up block stops falling) and let it
+// through the other three ways. To enemies they are ordinary tiles. The order
+// matches the masks in Level::arrows.
+enum ArrowDir : int8_t {
+  ARROW_NONE = -1,
+  ARROW_RIGHT,
+  ARROW_LEFT,
+  ARROW_UP,
+  ARROW_DOWN
+};
+
+int8_t arrowAt(int16_t col, int16_t row) {
+  if (col < 0 || col >= level->tiles || row < 0 || row >= 32) return ARROW_NONE;
+  for (int8_t dir = ARROW_RIGHT; dir <= ARROW_DOWN; ++dir) {
+    if ((level->arrows[col][dir] >> row) & 1u) return dir;
+  }
+  return ARROW_NONE;
+}
+
+// A solid tile that is not a direction block.
+bool plainTile(int16_t col, int16_t row) {
+  return solidTile(col, row) && arrowAt(col, row) == ARROW_NONE;
+}
+
+// True if the tile stops a bird that is moving in direction `moving`.
+bool blocksBird(int16_t col, int16_t row, ArrowDir moving) {
+  if (!solidTile(col, row)) return false;
+  const int8_t arrow = arrowAt(col, row);
+  if (arrow == ARROW_NONE) return true;
+  constexpr ArrowDir OPPOSITE[] = {ARROW_LEFT, ARROW_RIGHT, ARROW_DOWN,
+                                   ARROW_UP};
+  return moving == OPPOSITE[arrow];
+}
+
+// True if the tile stops the head of a rising bird.
+bool blocksJump(int16_t col, int16_t row) {
+  return blocksBird(col, row, ARROW_UP);
+}
+
 // ---- Boxes, eggs and rats ---------------------------------------------------
 // Boxes are half a tile (16 px) and float freely, so they use rectangle
 // collision instead of the tile grid. Plain boxes break when the bird bumps
 // them from below. Mystery boxes stay, darken and push an egg out of the top.
-// Eggs are the powerups (red: higher jump, blue: faster); now and then one is
+// Eggs: red refills the hearts, blue makes the bird faster for a while and
+// green gives an extra life; now and then one is
 // rotten: it hops and cracks open when the bird gets close, and a rat comes
 // out that chases the bird and bites.
-enum class BoxKind : uint8_t { Plain, Mystery, Nest };
+// Bean is a mystery box that holds a magic bean instead of an egg.
+enum class BoxKind : uint8_t { Plain, Mystery, Bean, Nest };
 
 constexpr int16_t BOX_SIZE = TILE;  // boxes are exactly one tile
 
@@ -150,6 +192,9 @@ struct Box {
 
 enum class EggState : uint8_t { None, Emerging, Idle, Hop, Open };
 
+// Red refills hearts, blue is a speed boost, green is an extra life.
+enum class EggKind : uint8_t { Red, Blue, Green };
+
 struct Egg {
   EggState state;
   float x;  // world x of the left side
@@ -158,11 +203,11 @@ struct Egg {
   float restY;  // top of the box it sits on
   uint8_t timer;
   bool rotten;  // cracks open into a rat instead of being a powerup
-  bool blue;    // blue = speed, red = jump
+  EggKind kind;
 };
 
-constexpr int16_t RAT_W = 24;
-constexpr int16_t RAT_H = 12;
+constexpr int16_t RAT_W = sfbRatWidth;   // sizes follow the art
+constexpr int16_t RAT_H = sfbRatHeight;
 constexpr int16_t RAT_SINK = 0;
 
 struct Rat {
@@ -177,8 +222,8 @@ struct Rat {
 struct Status {
   int hp;
   uint32_t invulnUntil;
-  uint32_t jumpBoostUntil;
   uint32_t speedBoostUntil;
+  int lives;
 };
 
 constexpr int16_t EGG_SIZE = 16;
@@ -187,20 +232,20 @@ constexpr float EGG_HOP_VELOCITY = -5.5f;
 constexpr float EGG_TRIGGER_DIST = 44.0f;  // a rotten egg wakes at this distance
 constexpr uint8_t EGG_OPEN_TICKS = 25;  // the broken shell stays this long
 constexpr int ROTTEN_ONE_IN = 5;        // chance an egg is rotten
-constexpr uint32_t BOOST_MS = 10000;
-constexpr float BOOST_JUMP_FACTOR = 1.2f;
+constexpr uint32_t BOOST_MS = 20000;  // speed boost
 constexpr float BOOST_SPEED_FACTOR = 1.3f;
 constexpr float RAT_SPEED = 1.5f;
 constexpr int PLAYER_MAX_HP = 3;
+constexpr int START_LIVES = 10;
 constexpr uint32_t INVULN_MS = 1500;
 constexpr float HURT_KNOCKBACK = 3.5f;
 constexpr float HURT_POP = -5.0f;
 
-constexpr int16_t NEST_W = 40;
-constexpr int16_t NEST_H = 23;
+constexpr int16_t NEST_W = sfbNestWidth;
+constexpr int16_t NEST_H = sfbNestHeight;
 constexpr int16_t NEST_SINK = 0;
 
-Box boxes[BOX_SLOTS];  // the last slot is the nest (level goal)
+Box boxes[BOX_SLOTS];  // slots from BOX_MAX on are nests (goals)
 Egg eggs[BOX_SLOTS];   // eggs[i] belongs to boxes[i]
 Rat rats[BOX_SLOTS];   // rats[i] hatched from eggs[i]
 
@@ -208,15 +253,15 @@ Rat rats[BOX_SLOTS];   // rats[i] hatched from eggs[i]
 // leap high, and at the top of the leap pounce forward.
 enum class FoxState : uint8_t { Idle, Prowl, Windup, Leap, Pounce, Recover };
 
-constexpr int16_t FOX_W = 35;
-constexpr int16_t FOX_H = 24;
+constexpr int16_t FOX_W = sfbFoxWidth;   // sizes follow the art
+constexpr int16_t FOX_H = sfbFoxHeight;
 constexpr float FOX_RUN_SPEED = 2.8f;          // faster than a walking bird
 constexpr float FOX_WAKE_DIST = 180.0f;
 constexpr float FOX_POUNCE_RANGE = 110.0f;
 constexpr uint8_t FOX_WINDUP_TICKS = 25;  // ~0.75 s crouch before the leap
 constexpr int16_t FOX_SINK = 0;
 constexpr uint8_t FOX_RECOVER_TICKS = 35;
-constexpr float FOX_LEAP_VELOCITY = -10.5f;    // about 78 px, higher than the bird
+constexpr float FOX_LEAP_VELOCITY = -10.5f;    // about 74 px, a bit lower than the bird
 constexpr float FOX_POUNCE_VX = 6.0f;
 constexpr float FOX_POUNCE_VY = 2.0f;
 
@@ -232,6 +277,59 @@ struct Fox {
 };
 
 Fox foxes[FOX_MAX];
+
+// Golden eggs: collectibles that hang where the map puts them. Dying restarts
+// the level, so they all come back.
+bool goldTaken[LEVEL_MAX_GOLDS];
+uint8_t goldCount = 0;  // collected on this attempt
+// Infinity eggs work the same, but how many there are is never shown.
+bool infinityTaken[LEVEL_MAX_INFINITIES];
+uint8_t infinityCount = 0;
+
+// ---- Magic beans and vines --------------------------------------------------
+// A bean box pushes out a bean. Walking into it sprouts a vine up to the top of
+// the level; touching it while crouched picks it up instead. A carried bean
+// is set down by holding crouch, and travels with the bird between areas.
+enum class BeanState : uint8_t { None, Emerging, Free, Carried, Vine };
+
+struct Bean {
+  BeanState state;
+  int16_t col;      // beans and vines stay on the tile grid
+  float y;          // world y of the bottom (the vine's foot)
+  float vy;
+  float restY;      // top of the box it is coming out of
+  bool armed;       // false until the bird stops touching a bean it handled
+  float top;        // how high the vine has grown
+};
+
+// beans[i] came out of boxes[i]; the extra slots are for beans carried in
+// from another area.
+constexpr uint8_t BEAN_SLOTS = BOX_SLOTS + 4;
+Bean beans[BEAN_SLOTS];
+
+constexpr float VINE_GROW_SPEED = 6.0f;
+constexpr float CLIMB_SPEED = 2.5f;
+constexpr uint32_t BEAN_DROP_HOLD_MS = 1000;  // hold crouch to set it down
+
+// The last box the bird bumped this tick: enemies standing on it are knocked off.
+const Box* bumpedBox = nullptr;
+
+// An enemy that was knocked off: it tumbles away upside down and cannot hurt.
+struct Corpse {
+  bool active;
+  const uint16_t* art;
+  int16_t w;
+  int16_t h;
+  float x;  // world x of the left side
+  float y;  // world y of the bottom
+  float vx;
+  float vy;
+};
+
+constexpr uint8_t MAX_CORPSES = 8;
+constexpr float KNOCK_SPEED = 3.0f;
+constexpr float KNOCK_POP = -6.0f;
+Corpse corpses[MAX_CORPSES];
 
 int16_t rowTop(int16_t row, int16_t screenH) {
   return screenH - (row + 1) * TILE;
@@ -259,10 +357,20 @@ void resolveWalls(Player& p, float prevX, int16_t screenH) {
       if (rowTop(r, screenH) >= bottom - 1.0f || rowBottom(r, screenH) <= top) {
         continue;
       }
+      if (p.vy < 0 && !blocksJump(c, r) &&
+          top - p.vy >= rowBottom(r, screenH) - 1.0f) {
+        continue;  // jumping up into a direction block from below
+      }
+      if (p.vy > 0 && !blocksBird(c, r, ARROW_DOWN) &&
+          bottom - p.vy <= rowTop(r, screenH) + 1.0f) {
+        continue;  // dropping into a direction block from above
+      }
       if (prevX + PLAYER_W <= c * TILE + 0.01f) {
+        if (!blocksBird(c, r, ARROW_RIGHT)) continue;
         p.x = c * TILE - PLAYER_W;  // came from the left
         p.vx = 0;
       } else if (prevX >= (c + 1) * TILE - 0.01f) {
+        if (!blocksBird(c, r, ARROW_LEFT)) continue;
         p.x = (c + 1) * TILE;  // came from the right
         p.vx = 0;
       }
@@ -318,7 +426,8 @@ bool landOnSurface(Player& p, int16_t screenH) {
   for (int16_t col = first; col <= last; ++col) {
     if (columnOverlap(p, col) < SUPPORT_OVERLAP) continue;
     for (int16_t r = 0; r < MAX_ROWS; ++r) {
-      if (!solidTile(col, r) || solidTile(col, r + 1)) continue;
+      // A direction block above does not hide the floor under it.
+      if (!blocksBird(col, r, ARROW_DOWN) || plainTile(col, r + 1)) continue;
       const float surface = rowTop(r, screenH);
       if (surface >= prevFeet - 4 && surface < best) best = surface;
     }
@@ -334,8 +443,9 @@ bool landOnSurface(Player& p, int16_t screenH) {
 
 // Y of the highest surface at or below `fromY` under a span of width `w`
 // (needs `minOverlap` px over a column), or a negative value if there is none.
+// `forBird` applies the direction block rules.
 float surfaceBelow(float x, float w, float fromY, float minOverlap,
-                   int16_t screenH) {
+                   int16_t screenH, bool forBird = false) {
   float best = 1e9f;
   const int16_t first = columnAt(x);
   const int16_t last = columnAt(x + w - 0.01f);
@@ -344,7 +454,10 @@ float surfaceBelow(float x, float w, float fromY, float minOverlap,
                           max(x, static_cast<float>(col * TILE));
     if (overlap < minOverlap) continue;
     for (int16_t r = 0; r < MAX_ROWS; ++r) {
-      if (!solidTile(col, r) || solidTile(col, r + 1)) continue;
+      const bool top = forBird ? blocksBird(col, r, ARROW_DOWN) &&
+                                     !plainTile(col, r + 1)
+                               : solidTile(col, r) && !solidTile(col, r + 1);
+      if (!top) continue;
       const float surface = rowTop(r, screenH);
       if (surface >= fromY - 4 && surface < best) best = surface;
     }
@@ -355,7 +468,7 @@ float surfaceBelow(float x, float w, float fromY, float minOverlap,
 
 // Where the bird would land (for its shadow); negative over a pit.
 float landingY(const Player& p, int16_t screenH) {
-  return surfaceBelow(p.x, PLAYER_W, p.y, SUPPORT_OVERLAP, screenH);
+  return surfaceBelow(p.x, PLAYER_W, p.y, SUPPORT_OVERLAP, screenH, true);
 }
 
 // Last line of defence: if the bird still ended up inside a tile (a deep
@@ -367,7 +480,8 @@ void unstick(Player& p, int16_t screenH) {
   for (int16_t c = first; c <= last; ++c) {
     if (columnOverlap(p, c) < SUPPORT_OVERLAP) continue;
     for (int16_t r = 0; r < MAX_ROWS; ++r) {
-      if (!solidTile(c, r)) continue;
+      // Direction blocks are skipped: the bird may be passing through one.
+      if (!plainTile(c, r)) continue;
       const float tileTop = rowTop(r, screenH);
       const float tileBottom = rowBottom(r, screenH);
       if (tileTop >= p.y - 2.0f || tileBottom <= top) continue;  // not inside
@@ -390,11 +504,59 @@ void unstick(Player& p, int16_t screenH) {
   }
 }
 
+// Bits that fly off a breaking brick, in the brick's own colors.
+struct Particle {
+  float x;
+  float y;
+  float vx;
+  float vy;
+  uint16_t color;
+  uint8_t life;  // ticks left; 0 = unused
+};
+
+constexpr uint8_t MAX_PARTICLES = 32;
+constexpr uint8_t PARTICLES_PER_BRICK = 10;
+constexpr uint8_t PARTICLE_LIFE = 18;  // ticks, about half a second
+Particle particles[MAX_PARTICLES];
+
+void clearParticles() {
+  for (auto& q : particles) q.life = 0;
+}
+
+void burstBrick(const Box& b) {
+  uint8_t made = 0;
+  for (auto& q : particles) {
+    if (made == PARTICLES_PER_BRICK) break;
+    if (q.life > 0) continue;
+    uint16_t color = pgm_read_word(&sfbBox[random(sfbBoxWidth * sfbBoxHeight)]);
+    if (color == SFB_TRANSPARENT) color = TFT_BROWN;
+    q.x = b.x + random(b.w - 2);
+    q.y = b.y + random(b.h - 2);
+    q.vx = random(-30, 31) / 10.0f;
+    q.vy = random(-50, -9) / 10.0f;
+    q.color = color;
+    q.life = PARTICLE_LIFE + random(7);
+    ++made;
+  }
+}
+
+void updateParticles() {
+  for (auto& q : particles) {
+    if (q.life == 0) continue;
+    --q.life;
+    q.vy += GRAVITY;
+    q.x += q.vx;
+    q.y += q.vy;
+  }
+}
+
 // The bird bumped a box from below.
 void hitBox(Box& b) {
   if (b.kind == BoxKind::Nest) return;
+  bumpedBox = &b;
   if (b.kind == BoxKind::Plain) {
     b.broken = true;
+    burstBrick(b);
     audioPlayTone(330, 40);
     return;
   }
@@ -402,6 +564,12 @@ void hitBox(Box& b) {
   b.used = true;
   b.bump = 6;
   audioPlayTone(880, 40);
+  if (b.kind == BoxKind::Bean) {
+    const int16_t col = b.x / TILE;
+    beans[&b - boxes] = {BeanState::Emerging, col, static_cast<float>(b.y + TILE),
+                         0, static_cast<float>(b.y), true, 0};
+    return;
+  }
   Egg& e = eggs[&b - boxes];
   e.restY = static_cast<float>(b.y);
   e.x = b.x + (b.w - EGG_SIZE) / 2.0f;
@@ -409,7 +577,8 @@ void hitBox(Box& b) {
   e.vy = 0;
   e.timer = 0;
   e.rotten = random(ROTTEN_ONE_IN) == 0;
-  e.blue = random(2) == 0;
+  const long roll = random(5);  // red 40%, blue 40%, green 20%
+  e.kind = roll < 2 ? EggKind::Red : (roll < 4 ? EggKind::Blue : EggKind::Green);
   e.state = EggState::Emerging;
 }
 
@@ -438,7 +607,7 @@ void bumpHead(Player& p, int16_t screenH) {
     for (int16_t r = 0; r < MAX_ROWS; ++r) {
       // Only a tile's exposed underside counts. Internal seams inside a wall
       // must not stop a bird that is rising beside it.
-      if (r == 0 || !solidTile(c, r) || solidTile(c, r - 1)) continue;
+      if (r == 0 || !blocksJump(c, r) || plainTile(c, r - 1)) continue;
       const float bottom = rowBottom(r, screenH);
       if (head < bottom && prevHead >= bottom - 4) {
         p.y = bottom + height;
@@ -465,6 +634,10 @@ bool hasHeadroom(const Player& p, int16_t screenH) {
   for (int16_t c = first; c <= last; ++c) {
     for (int16_t r = 0; r < MAX_ROWS; ++r) {
       if (!solidTile(c, r)) continue;
+      // A standing bird walking into a direction block must not be forced to
+      // crouch; only standing up into a down one from below is stopped.
+      const int8_t arrow = arrowAt(c, r);
+      if (arrow != ARROW_NONE && (!p.ducking || arrow != ARROW_DOWN)) continue;
       if (rowTop(r, screenH) < crouchTop && rowBottom(r, screenH) > standTop) {
         return false;
       }
@@ -480,20 +653,20 @@ bool hasHeadroom(const Player& p, int16_t screenH) {
 
 void drawScaled(TFT_eSPI& d, int16_t x, int16_t y, int16_t w, int16_t h,
                 const uint16_t* pixels, bool flip, int16_t destH,
-                int16_t scale) {
+                int16_t scale, bool upsideDown = false) {
   // Nearest-neighbor draw of a w x h sprite, scale wide and destH tall.
   y -= gCameraY;
   if (y + destH <= 0 || y >= d.height()) return;  // off screen
   const int16_t destW = w * scale;
   for (int16_t dy = 0; dy < destH; ++dy) {
-    const int16_t sy = dy * h / destH;
+    const int16_t sy = upsideDown ? h - 1 - dy * h / destH : dy * h / destH;
     int16_t runStart = -1;
     uint16_t runColor = 0;
     for (int16_t dx = 0; dx <= destW; ++dx) {
       uint16_t color = SFB_TRANSPARENT;
       if (dx < destW) {
         const int16_t sx = flip ? (w - 1 - dx / scale) : dx / scale;
-        color = pixels[sy * w + sx];
+        color = pgm_read_word(&pixels[sy * w + sx]);
       }
       if (runStart >= 0 && color != runColor) {
         d.drawFastHLine(x + runStart, y + dy, dx - runStart, runColor);
@@ -507,11 +680,39 @@ void drawScaled(TFT_eSPI& d, int16_t x, int16_t y, int16_t w, int16_t h,
   }
 }
 
-void drawCloud(TFT_eSPI& d, int16_t x, int16_t y) {
-  d.fillCircle(x, y, 10, CLOUD);
-  d.fillCircle(x + 12, y - 5, 13, CLOUD);
-  d.fillCircle(x + 28, y, 10, CLOUD);
-  d.fillRect(x, y, 28, 10, CLOUD);
+// Pixels of the 8-bit frame sprite, or null when drawing straight to the screen.
+uint8_t* gFrameBuffer = nullptr;
+
+// Unpack one row of the sky (RGB332) into `line`, sfbSkyWidth pixels long.
+void skyRow(int16_t y, uint8_t* line) {
+  const uint8_t* run = sfbSkyRuns + pgm_read_word(&sfbSkyRows[y]);
+  for (int16_t x = 0; x < sfbSkyWidth; run += 2) {
+    const uint8_t length = pgm_read_byte(run);
+    memset(line + x, pgm_read_byte(run + 1), length);
+    x += length;
+  }
+}
+
+// The sky picture scrolled sideways by `offset`, wrapping, into an 8-bit frame
+// buffer as wide as the sky.
+void copySky(uint8_t* frame, int16_t offset, int16_t rows) {
+  uint8_t line[sfbSkyWidth];
+  for (int16_t y = 0; y < rows && y < sfbSkyHeight; ++y) {
+    skyRow(y, line);
+    uint8_t* const target = frame + y * sfbSkyWidth;
+    memcpy(target, line + offset, sfbSkyWidth - offset);
+    memcpy(target + sfbSkyWidth - offset, line, offset);
+  }
+}
+
+// In the game the sky scrolls at a quarter of the camera speed. Without a frame
+// buffer it is a flat color.
+void drawSky(TFT_eSPI& d, int16_t cameraX) {
+  if (gFrameBuffer == nullptr || d.width() != sfbSkyWidth) {
+    d.fillRect(0, 0, d.width(), d.height(), SKY);
+    return;
+  }
+  copySky(gFrameBuffer, (cameraX / 4) % sfbSkyWidth, d.height());
 }
 
 // Dirt / background tiles (the H cells of the map): drawn, never solid.
@@ -534,10 +735,90 @@ void drawLayer(TFT_eSPI& d, bool (*solid)(int16_t, int16_t), const uint16_t* til
   }
 }
 
+// True if something other than grass sits on top of a tile: dirt, a direction
+// block or an intact box.
+bool coveredAbove(int16_t col, int16_t row, int16_t screenH) {
+  if (decorTile(col, row + 1) || arrowAt(col, row + 1) != ARROW_NONE) {
+    return true;
+  }
+  for (const auto& b : boxes) {
+    if (!b.broken && b.kind != BoxKind::Nest && b.x == col * TILE &&
+        b.y + b.h == rowTop(row, screenH)) {
+      return true;
+    }
+  }
+  return false;
+}
+
 void drawGround(TFT_eSPI& d, int16_t cameraX, int16_t screenH) {
-  drawLayer(d, decorTile, runtimeAssets->dirt.pixels(), cameraX,
-            screenH);  // dirt / background
-  drawLayer(d, solidTile, runtimeAssets->grass.pixels(), cameraX, screenH);
+  drawLayer(d, decorTile, sfbDirt, cameraX, screenH);  // dirt / background
+  drawLayer(d, plainTile, sfbGrass, cameraX, screenH);
+
+  const uint16_t* const arrowArt[] = {sfbArrowRight, sfbArrowLeft, sfbArrowUp,
+                                      sfbArrowDown};
+  // Direction blocks connected to grass (directly or through other grassy
+  // blocks) are grassy; tools/build_levels.py works out which.
+  const uint16_t* const grassyArt[] = {sfbGrassyArrowRight, sfbGrassyArrowLeft,
+                                       sfbGrassyArrowUp, sfbGrassyArrowDown};
+  const int16_t first = max(0, cameraX / TILE);
+  const int16_t last = min<int16_t>(level->tiles - 1, (cameraX + d.width()) / TILE);
+  for (int16_t col = first; col <= last; ++col) {
+    for (int16_t row = 0; row < MAX_ROWS; ++row) {
+      // Black outline on the sides and bottom of a grass tile that are not
+      // touching another grass tile; the top only where something covers it.
+      if (plainTile(col, row)) {
+        const int16_t x = col * TILE - cameraX;
+        const int16_t y = rowTop(row, screenH) - gCameraY;
+        if (coveredAbove(col, row, screenH)) {
+          d.drawFastHLine(x, y, TILE, TFT_BLACK);
+        }
+        if (!plainTile(col, row - 1)) {
+          d.drawFastHLine(x, y + TILE - 1, TILE, TFT_BLACK);
+        }
+        if (!plainTile(col - 1, row)) d.drawFastVLine(x, y, TILE, TFT_BLACK);
+        if (!plainTile(col + 1, row)) {
+          d.drawFastVLine(x + TILE - 1, y, TILE, TFT_BLACK);
+        }
+        continue;
+      }
+      // Grass shades the dirt directly underneath it.
+      if (decorTile(col, row) && plainTile(col, row + 1)) {
+        drawScaled(d, col * TILE - cameraX, rowTop(row, screenH), 16, 16,
+                   sfbDirtShadow, false, TILE, SCALE);
+        continue;
+      }
+      const int8_t arrow = arrowAt(col, row);
+      if (arrow == ARROW_NONE) continue;
+      const bool grassy = (level->grassy[col] >> row) & 1u;
+      drawScaled(d, col * TILE - cameraX, rowTop(row, screenH), 16, 16,
+                 (grassy ? grassyArt : arrowArt)[arrow], false, TILE, SCALE);
+    }
+  }
+}
+
+// A bean with its bottom-left at (x, bottom): x on screen, bottom in the world.
+void drawBean(TFT_eSPI& d, int16_t x, int16_t bottom, bool flip = false) {
+  drawScaled(d, x, bottom - sfbBeanHeight, sfbBeanWidth, sfbBeanHeight, sfbBean,
+             flip, sfbBeanHeight, 1);
+}
+
+// Placeholder art for the vine, until there is a picture for it.
+void drawVines(TFT_eSPI& d, int16_t cameraX) {
+  constexpr uint16_t STEM = 0x0480;
+  for (const auto& n : beans) {
+    if (n.state != BeanState::Vine) continue;
+    const int16_t x = n.col * TILE - cameraX;
+    if (x + TILE < 0 || x > d.width()) continue;
+    const int16_t foot = static_cast<int16_t>(n.y) - gCameraY;
+    const int16_t tip = static_cast<int16_t>(n.top) - gCameraY;
+    for (int16_t y = foot; y > tip; y -= 8) {
+      if (y < 0 || y - 8 > d.height()) continue;
+      const int16_t part = min<int16_t>(8, y - tip);
+      d.fillRect(x + 6, y - part, 4, part, STEM);
+      const bool left = ((foot - y) / 8) % 2 == 0;
+      d.fillEllipse(x + (left ? 3 : 12), y - 4, 3, 2, TFT_GREEN);
+    }
+  }
 }
 
 void drawBoxesAndEggs(TFT_eSPI& d, int16_t cameraX) {
@@ -547,25 +828,45 @@ void drawBoxesAndEggs(TFT_eSPI& d, int16_t cameraX) {
     if (e.state == EggState::None) continue;
     const int16_t ex = static_cast<int16_t>(e.x) - cameraX;
     if (ex + EGG_SIZE < 0 || ex > screenW) continue;
-    const uint16_t* art =
-        e.blue ? runtimeAssets->blueEgg.pixels() : runtimeAssets->egg.pixels();
-    if (e.state == EggState::Hop) art = runtimeAssets->eggCracking.pixels();
-    if (e.state == EggState::Open) art = runtimeAssets->eggOpen.pixels();
+    const uint16_t* art = e.kind == EggKind::Blue    ? sfbBlueEgg
+                          : e.kind == EggKind::Green ? sfbGreenEgg
+                                                     : sfbEgg;
+    if (e.state == EggState::Hop) art = sfbEggCracking;
+    if (e.state == EggState::Open) art = sfbEggOpen;
     drawScaled(d, ex, static_cast<int16_t>(e.y) - EGG_SIZE, 16, 16, art, false,
                EGG_SIZE, 1);
+  }
+  for (const auto& n : beans) {
+    if (n.state != BeanState::Emerging && n.state != BeanState::Free) continue;
+    drawBean(d, n.col * TILE - cameraX, static_cast<int16_t>(n.y));
   }
   for (const auto& b : boxes) {
     if (b.broken) continue;
     const int16_t bx = b.x - cameraX;
     if (bx + b.w < 0 || bx > screenW) continue;
-    const uint16_t* art =
-        b.kind == BoxKind::Plain
-            ? runtimeAssets->box.pixels()
-            : (b.kind == BoxKind::Nest
-                   ? runtimeAssets->nest.pixels()
-                   : (b.used ? runtimeAssets->mysteryOff.pixels()
-                             : runtimeAssets->mystery.pixels()));
+    const uint16_t* art = b.kind == BoxKind::Plain
+                              ? sfbBox
+                              : (b.kind == BoxKind::Nest
+                                     ? sfbNest
+                                     : (b.used ? sfbMysteryOff : sfbMystery));
     drawScaled(d, bx, b.y - b.bump, b.w, b.h, art, false, b.h, 1);
+  }
+}
+
+void drawGoldEggs(TFT_eSPI& d, int16_t cameraX, int16_t screenH) {
+  for (uint8_t i = 0; i < level->goldCount; ++i) {
+    if (goldTaken[i]) continue;
+    const int16_t x = level->golds[i][0] * TILE - cameraX;
+    if (x + EGG_SIZE < 0 || x > d.width()) continue;
+    drawScaled(d, x, rowTop(level->golds[i][1], screenH), 16, 16, sfbGoldEgg,
+               false, EGG_SIZE, 1);
+  }
+  for (uint8_t i = 0; i < level->infinityCount; ++i) {
+    if (infinityTaken[i]) continue;
+    const int16_t x = level->infinities[i][0] * TILE - cameraX;
+    if (x + EGG_SIZE < 0 || x > d.width()) continue;
+    drawScaled(d, x, rowTop(level->infinities[i][1], screenH), 16, 16,
+               sfbInfinityEgg, false, EGG_SIZE, 1);
   }
 }
 
@@ -577,10 +878,12 @@ void drawHeart(TFT_eSPI& d, int16_t x, int16_t y, uint16_t color) {
 
 struct Hud {
   uint32_t exitHeldMs;
-  uint32_t jumpLeftMs;
   uint32_t speedLeftMs;
   int hp;
+  int lives;
   bool blink;  // hide the bird this frame (just hurt)
+  bool gliding;
+  bool climbing;
   float sink;  // how far the bird is drawn below its feet line right now
   uint32_t levelMs;  // time on this level
   uint32_t totalMs;  // time since the first level
@@ -608,18 +911,17 @@ void drawFrame(TFT_eSPI& d, const Player& p, const Gorilla* gorillas,
                int16_t cameraX, int16_t cameraY, int16_t screenH,
                const Hud& hud) {
   gCameraY = cameraY;
-  d.fillRect(0, 0, d.width(), d.height(), SKY);
-
-  // Clouds drift at half the camera speed and wrap around.
-  constexpr int16_t CLOUD_SPAN = 640;
-  for (int16_t i = 0; i < 4; ++i) {
-    const int16_t cx =
-        ((i * 160 + 20 - cameraX / 2) % CLOUD_SPAN + CLOUD_SPAN) % CLOUD_SPAN - 80;
-    drawCloud(d, cx, 30 + (i * 37) % 70);
-  }
+  drawSky(d, cameraX);
 
   drawGround(d, cameraX, screenH);
   drawBoxesAndEggs(d, cameraX);
+  drawGoldEggs(d, cameraX, screenH);
+  drawVines(d, cameraX);
+  for (const auto& q : particles) {
+    if (q.life == 0) continue;
+    d.fillRect(static_cast<int16_t>(q.x) - cameraX,
+               static_cast<int16_t>(q.y) - gCameraY, 3, 3, q.color);
+  }
 
   for (uint8_t i = 0; i < MAX_GORILLAS; ++i) {
     const Gorilla& g = gorillas[i];
@@ -627,20 +929,16 @@ void drawFrame(TFT_eSPI& d, const Player& p, const Gorilla* gorillas,
     const int16_t gx = static_cast<int16_t>(g.x) - cameraX;
     if (gx + GORILLA_W < 0 || gx > d.width()) continue;
     drawScaled(d, gx, static_cast<int16_t>(g.y) - GORILLA_H + GORILLA_SINK,
-               GORILLA_W, GORILLA_H,
-               g.red ? runtimeAssets->redGorilla.pixels()
-                     : runtimeAssets->gorilla.pixels(),
-               false, GORILLA_H, 1);
+               GORILLA_W, GORILLA_H, g.red ? sfbRedGorilla : sfbGorilla, false,
+               GORILLA_H, 1);
   }
 
   for (const auto& r : rats) {
     if (!r.active) continue;
     const int16_t rx = static_cast<int16_t>(r.x) - cameraX;
     if (rx + RAT_W < 0 || rx > d.width()) continue;
-    drawScaled(d, rx, static_cast<int16_t>(r.y) - RAT_H + RAT_SINK,
-               runtimeAssets->rat.width, runtimeAssets->rat.height,
-               runtimeAssets->rat.pixels(), !r.facingRight, RAT_H,
-               1);  // the art faces right
+    drawScaled(d, rx, static_cast<int16_t>(r.y) - RAT_H + RAT_SINK, RAT_W, RAT_H, sfbRat,
+               !r.facingRight, RAT_H, 1);  // the art faces right
   }
 
   for (const auto& f : foxes) {
@@ -649,13 +947,21 @@ void drawFrame(TFT_eSPI& d, const Player& p, const Gorilla* gorillas,
     if (fx + FOX_W < 0 || fx > d.width()) continue;
     // Crouch (squash) while winding up; the art faces right.
     const int16_t h = f.state == FoxState::Windup ? FOX_H - 6 : FOX_H;
-    drawScaled(d, fx, static_cast<int16_t>(f.y) - h + FOX_SINK, FOX_W, FOX_H,
-               runtimeAssets->fox.pixels(), !f.facingRight, h, 1);
+    drawScaled(d, fx, static_cast<int16_t>(f.y) - h + FOX_SINK, FOX_W, FOX_H, sfbFox,
+               !f.facingRight, h, 1);
+  }
+
+  for (const auto& c : corpses) {
+    if (!c.active) continue;
+    const int16_t cx = static_cast<int16_t>(c.x) - cameraX;
+    if (cx + c.w < 0 || cx > d.width()) continue;
+    drawScaled(d, cx, static_cast<int16_t>(c.y) - c.h, c.w, c.h, c.art,
+               c.vx < 0, c.h, 1, true);
   }
 
   // Shadow on the surface below the bird while airborne; it shrinks as the
   // bird gets higher so the landing spot is easy to judge.
-  if (!p.onGround) {
+  if (!p.onGround && !hud.climbing) {
     const float sy = landingY(p, screenH);
     if (sy >= 0) {
       const float height = max(0.0f, sy - p.y);
@@ -671,19 +977,21 @@ void drawFrame(TFT_eSPI& d, const Player& p, const Gorilla* gorillas,
   // Walk cycle: left foot forward/up/forward/post/post2, then the same for the right foot (stand is the 16 px
   // StandStill art, the walk frames are 32 px wide).
   const uint16_t* const walk[WALK_FRAME_COUNT] = {
-      runtimeAssets->walk[1].pixels(), runtimeAssets->walk[0].pixels(),
-      runtimeAssets->walk[4].pixels(), runtimeAssets->walk[5].pixels(),
-      runtimeAssets->walk[3].pixels(), runtimeAssets->walk[2].pixels(),
-      runtimeAssets->walk[6].pixels(), runtimeAssets->walk[7].pixels()};
-  const uint16_t* art = runtimeAssets->bird.pixels();
+      sfbWalk1, sfbWalk0, sfbWalk4, sfbWalk5,   // left foot: up, forward, post, post 2
+      sfbWalk3, sfbWalk2, sfbWalk6, sfbWalk7};  // right foot: up, forward, post, post 2
+  const uint16_t* art = sfbBird;
   int16_t artW = 32;
   int16_t artH = 32;
-  if (p.ducking) {
-    art = runtimeAssets->duck.pixels();  // used on the ground and in the air
-    artW = runtimeAssets->duck.width;
-    artH = runtimeAssets->duck.height;
+  if (hud.gliding) {
+    art = sfbDive;  // floating
+    artW = sfbDiveWidth;
+    artH = sfbDiveHeight;
+  } else if (p.ducking) {
+    art = sfbDuck;  // used on the ground and in the air
+    artW = sfbDuckWidth;
+    artH = sfbDuckHeight;
   } else if (!p.onGround) {
-    art = runtimeAssets->walk[1].pixels();  // foot tucked up while airborne
+    art = sfbWalk1;  // foot tucked up while airborne
   } else if (fabsf(p.vx) > 0.3f) {
     art = walk[static_cast<int>(p.stride) % WALK_FRAME_COUNT];
   } else {
@@ -696,19 +1004,54 @@ void drawFrame(TFT_eSPI& d, const Player& p, const Gorilla* gorillas,
                static_cast<int16_t>(p.y + hud.sink) - destH, artW, artH, art,
                !p.facingRight, destH, BIRD_SCALE);
   }
+  for (const auto& n : beans) {  // a carried bean rides on the bird's back
+    if (n.state != BeanState::Carried || hud.blink) continue;
+    drawBean(d,
+             static_cast<int16_t>(p.x) - cameraX + (p.facingRight ? -6 : 7),
+             static_cast<int16_t>(p.y) - (p.ducking ? 7 : 9), !p.facingRight);
+  }
 
   // Hearts (top right) and powerup timers (top left).
   for (int i = 0; i < PLAYER_MAX_HP; ++i) {
     drawHeart(d, d.width() - 14 * (PLAYER_MAX_HP - i) - 2, 4,
               i < hud.hp ? TFT_RED : 0x4208);
   }
-  int16_t barY = 4;
-  if (hud.jumpLeftMs > 0) {
-    d.fillRect(4, barY, 42, 8, TFT_BLACK);
-    d.drawRect(4, barY, 42, 8, TFT_WHITE);
-    d.fillRect(6, barY + 2, 38 * hud.jumpLeftMs / BOOST_MS, 4, TFT_RED);
-    barY += 10;
+  // Golden eggs collected, under the hearts.
+  if (level->goldCount > 0) {
+    char eggText[12];
+    snprintf(eggText, sizeof(eggText), "%d/%d", goldCount, level->goldCount);
+    d.setTextFont(1);
+    d.setTextSize(1);
+    d.setTextDatum(TR_DATUM);
+    d.setTextColor(TFT_WHITE, TFT_BLACK);
+    d.drawString(eggText, d.width() - 4, 22);
+    // drawScaled takes world y, so add the camera offset back.
+    drawScaled(d, d.width() - 22 - d.textWidth(eggText), 18 + gCameraY, 16, 16,
+               sfbGoldEgg, false, EGG_SIZE, 1);
   }
+  // Infinity eggs: only how many have been found.
+  if (infinityCount > 0) {
+    char countText[6];
+    snprintf(countText, sizeof(countText), "%d", infinityCount);
+    d.setTextFont(1);
+    d.setTextSize(1);
+    d.setTextDatum(TR_DATUM);
+    d.setTextColor(TFT_WHITE, TFT_BLACK);
+    d.drawString(countText, d.width() - 4, 40);
+    drawScaled(d, d.width() - 22 - d.textWidth(countText), 36 + gCameraY, 16, 16,
+               sfbInfinityEgg, false, EGG_SIZE, 1);
+  }
+  // Lives left (top left).
+  {
+    char livesText[16];
+    snprintf(livesText, sizeof(livesText), "Lives %d", hud.lives);
+    d.setTextFont(1);
+    d.setTextSize(1);
+    d.setTextDatum(TL_DATUM);
+    d.setTextColor(TFT_WHITE, TFT_BLACK);
+    d.drawString(livesText, 4, 4);
+  }
+  const int16_t barY = 16;
   if (hud.speedLeftMs > 0) {
     d.fillRect(4, barY, 42, 8, TFT_BLACK);
     d.drawRect(4, barY, 42, 8, TFT_WHITE);
@@ -760,6 +1103,17 @@ void initGorillas(Gorilla* g, int16_t screenH) {
   }
 }
 
+// True if an intact brick or mystery box fills the cell.
+bool boxAt(int16_t col, int16_t row, int16_t screenH) {
+  for (const auto& b : boxes) {
+    if (!b.broken && b.kind != BoxKind::Nest && b.x == col * TILE &&
+        b.y == rowTop(row, screenH)) {
+      return true;
+    }
+  }
+  return false;
+}
+
 void updateGorillas(Gorilla* g, Player& p, int16_t screenH) {
   const float playerX = p.x + PLAYER_W / 2.0f;
   for (uint8_t i = 0; i < MAX_GORILLAS; ++i) {
@@ -782,8 +1136,14 @@ void updateGorillas(Gorilla* g, Player& p, int16_t screenH) {
     // must stay over ground at their home level.
     const int16_t leftCol = columnAt(nextX);
     const int16_t rightCol = columnAt(nextX + GORILLA_W - 0.01f);
-    if (solidTile(leftCol, a.homeRow - 1) && solidTile(rightCol, a.homeRow - 1) &&
-        !solidTile(leftCol, a.homeRow) && !solidTile(rightCol, a.homeRow)) {
+    const auto support = [&](int16_t col) {
+      return solidTile(col, a.homeRow - 1) ||
+             boxAt(col, a.homeRow - 1, screenH);
+    };
+    if (support(leftCol) && support(rightCol) &&
+        !solidTile(leftCol, a.homeRow) && !solidTile(rightCol, a.homeRow) &&
+        !boxAt(leftCol, a.homeRow, screenH) &&
+        !boxAt(rightCol, a.homeRow, screenH)) {
       a.x = nextX;
     } else if (!a.red) {
       a.dir = -a.dir;
@@ -829,25 +1189,39 @@ void updateGorillas(Gorilla* g, Player& p, int16_t screenH) {
 }
 
 void initObjects(int16_t screenH) {
+  clearParticles();
+  for (auto& n : beans) n.state = BeanState::None;
+  for (auto& c : corpses) c.active = false;
+  bumpedBox = nullptr;
+  for (auto& taken : goldTaken) taken = false;
+  goldCount = 0;
+  for (auto& taken : infinityTaken) taken = false;
+  infinityCount = 0;
   for (uint8_t i = 0; i < BOX_SLOTS; ++i) {
-    eggs[i] = {EggState::None, 0, 0, 0, 0, 0, false, false};
+    eggs[i] = {EggState::None, 0, 0, 0, 0, 0, false, EggKind::Red};
     rats[i] = {false, 0, 0, 0, true};
     if (i < level->boxCount) {
       const int16_t* spawn = level->boxes[i];
       boxes[i] = {spawn[0], static_cast<int16_t>(screenH - spawn[1] - BOX_SIZE),
                   BOX_SIZE, BOX_SIZE,
-                  spawn[2] ? BoxKind::Mystery : BoxKind::Plain, false, false, 0};
+                  spawn[2] == 2 ? BoxKind::Bean
+                  : spawn[2]    ? BoxKind::Mystery
+                                : BoxKind::Plain,
+                  false, false, 0};
     } else {
       boxes[i] = {0, 0, BOX_SIZE, BOX_SIZE, BoxKind::Plain, true, false, 0};
     }
   }
-  // The nest: bottom on the ground, centered over its column.
-  const int16_t col = level->nestCol;
-  boxes[BOX_SLOTS - 1] = {
-      static_cast<int16_t>(col * TILE + (TILE - NEST_W) / 2),
-      static_cast<int16_t>(spawnY(level->nestRow, screenH) - NEST_H + NEST_SINK),
-      NEST_W, NEST_H,
-      BoxKind::Nest, false, false, 0};
+  // Nests: bottom on the ground, centered over their column.
+  for (uint8_t i = 0; i < level->nestCount; ++i) {
+    const int16_t col = level->nests[i][0];
+    const int16_t row = level->nests[i][1];
+    boxes[BOX_MAX + i] = {
+        static_cast<int16_t>(col * TILE + (TILE - NEST_W) / 2),
+        static_cast<int16_t>(spawnY(row, screenH) - NEST_H + NEST_SINK),
+        NEST_W, NEST_H,
+        BoxKind::Nest, false, false, 0};
+  }
   for (uint8_t i = 0; i < FOX_MAX; ++i) {
     if (i >= level->foxCount) {
       foxes[i] = {false, 0, 0, 0, 0, FoxState::Idle, 0, false};
@@ -906,6 +1280,29 @@ bool updateObjects(Player& p, Status& st, uint32_t now, int16_t screenH) {
     }
   }
 
+  for (uint8_t i = 0; i < level->goldCount; ++i) {
+    if (goldTaken[i]) continue;
+    const float x = level->golds[i][0] * TILE;
+    const float top = rowTop(level->golds[i][1], screenH);
+    if (p.x + PLAYER_W > x && p.x < x + EGG_SIZE && pBottom > top &&
+        pTop < top + EGG_SIZE) {
+      goldTaken[i] = true;
+      ++goldCount;
+      audioPlayTone(1760, 60);
+    }
+  }
+  for (uint8_t i = 0; i < level->infinityCount; ++i) {
+    if (infinityTaken[i]) continue;
+    const float x = level->infinities[i][0] * TILE;
+    const float top = rowTop(level->infinities[i][1], screenH);
+    if (p.x + PLAYER_W > x && p.x < x + EGG_SIZE && pBottom > top &&
+        pTop < top + EGG_SIZE) {
+      infinityTaken[i] = true;
+      ++infinityCount;
+      audioPlayTone(2093, 60);
+    }
+  }
+
   for (uint8_t i = 0; i < BOX_SLOTS; ++i) {
     Egg& e = eggs[i];
     const float eggX = e.x + EGG_SIZE / 2.0f;
@@ -932,12 +1329,14 @@ bool updateObjects(Player& p, Status& st, uint32_t now, int16_t screenH) {
           }
         } else if (p.x + PLAYER_W > e.x && p.x < e.x + EGG_SIZE &&
                    pBottom > e.y - EGG_SIZE && pTop < e.y) {
-          // Grabbed: the egg is the powerup.
+          // Grabbed.
           e.state = EggState::None;
-          if (e.blue) {
+          if (e.kind == EggKind::Blue) {
             st.speedBoostUntil = now + BOOST_MS;
+          } else if (e.kind == EggKind::Green) {
+            ++st.lives;
           } else {
-            st.jumpBoostUntil = now + BOOST_MS;
+            st.hp = PLAYER_MAX_HP;
           }
           audioPlayTone(1320, 60);
         }
@@ -979,7 +1378,8 @@ bool updateObjects(Player& p, Status& st, uint32_t now, int16_t screenH) {
       const int16_t front = columnAt(dir > 0 ? nextX + RAT_W : nextX);
       const int16_t row =
           static_cast<int16_t>(floorf((screenH - (r.y - 2)) / TILE));
-      if (!solidTile(front, row) && nextX >= 0 && nextX + RAT_W <= worldW()) {
+      if (!solidTile(front, row) && !boxAt(front, row, screenH) &&
+          nextX >= 0 && nextX + RAT_W <= worldW()) {
         r.x = nextX;
       }
     }
@@ -1015,7 +1415,8 @@ bool updateObjects(Player& p, Status& st, uint32_t now, int16_t screenH) {
         // Races along the ground, but stops at walls and pit edges.
         const float ground = surfaceBelow(nextX, FOX_W, f.y, 4.0f, screenH);
         const bool safe = ground >= 0 && ground - f.y < 4;
-        if (!solidTile(front, row) && safe && nextX >= 0 &&
+        if (!solidTile(front, row) && !boxAt(front, row, screenH) && safe &&
+            nextX >= 0 &&
             nextX + FOX_W <= worldW()) {
           f.x = nextX;
         }
@@ -1047,7 +1448,8 @@ bool updateObjects(Player& p, Status& st, uint32_t now, int16_t screenH) {
         const int16_t front = columnAt(f.vx > 0 ? nextX + FOX_W : nextX);
         const int16_t row =
             static_cast<int16_t>(floorf((screenH - (f.y - 2)) / TILE));
-        if (!solidTile(front, row) && nextX >= 0 && nextX + FOX_W <= worldW()) {
+        if (!solidTile(front, row) && !boxAt(front, row, screenH) &&
+            nextX >= 0 && nextX + FOX_W <= worldW()) {
           f.x = nextX;
         } else {
           f.vx = 0;
@@ -1079,6 +1481,237 @@ bool updateObjects(Player& p, Status& st, uint32_t now, int16_t screenH) {
   return atNest;
 }
 
+// ---- Knocking enemies off bumped boxes --------------------------------------
+void knockOff(const uint16_t* art, int16_t w, int16_t h, float x, float y,
+              float fromX) {
+  const float vx = x + w / 2.0f >= fromX ? KNOCK_SPEED : -KNOCK_SPEED;
+  for (auto& c : corpses) {
+    if (c.active) continue;
+    c = {true, art, w, h, x, y, vx, KNOCK_POP};
+    break;
+  }
+  audioPlayTone(990, 30);
+}
+
+// Kill every enemy standing on box b; fromX is the bird that bumped it.
+void knockEnemiesOn(const Box& b, Gorilla* gorillas, float fromX) {
+  const auto standsOn = [&](float x, float w, float feet) {
+    return fabsf(feet - b.y) <= 2.0f &&
+           min(x + w, static_cast<float>(b.x + b.w)) -
+                   max(x, static_cast<float>(b.x)) >= 2.0f;
+  };
+  for (uint8_t i = 0; i < MAX_GORILLAS; ++i) {
+    Gorilla& g = gorillas[i];
+    // groundY, so a gorilla in the middle of a little hop still counts.
+    if (!g.alive || !standsOn(g.x, GORILLA_W, g.groundY)) continue;
+    g.alive = false;
+    knockOff(g.red ? sfbRedGorilla : sfbGorilla, GORILLA_W, GORILLA_H, g.x, g.y,
+             fromX);
+  }
+  for (auto& r : rats) {
+    if (!r.active || !standsOn(r.x, RAT_W, r.y)) continue;
+    r.active = false;
+    knockOff(sfbRat, RAT_W, RAT_H, r.x, r.y, fromX);
+  }
+  for (auto& f : foxes) {
+    if (!f.active || !standsOn(f.x, FOX_W, f.y)) continue;
+    f.active = false;
+    knockOff(sfbFox, FOX_W, FOX_H, f.x, f.y, fromX);
+  }
+}
+
+void updateCorpses(int16_t screenH) {
+  for (auto& c : corpses) {
+    if (!c.active) continue;
+    c.vy = min(c.vy + GRAVITY, MAX_FALL);
+    c.x += c.vx;
+    c.y += c.vy;
+    if (c.y - c.h > screenH + FALL_RESET_DEPTH) c.active = false;
+  }
+}
+
+// ---- Beans and vines --------------------------------------------------------
+int carriedBean() {
+  for (int i = 0; i < BEAN_SLOTS; ++i) {
+    if (beans[i].state == BeanState::Carried) return i;
+  }
+  return -1;
+}
+
+// skyY is the world y of the highest the camera can see.
+void updateBeans(const Player& p, int16_t screenH, float skyY) {
+  for (auto& n : beans) {
+    if (n.state == BeanState::Vine) {
+      n.top = max(skyY, n.top - VINE_GROW_SPEED);
+      continue;
+    }
+    if (n.state == BeanState::Emerging) {
+      n.y -= EGG_EMERGE_SPEED;
+      if (n.y <= n.restY) {
+        n.y = n.restY;
+        n.state = BeanState::Free;
+      }
+      continue;
+    }
+    if (n.state != BeanState::Free) continue;
+
+    // Falls unless something is under it.
+    const float prevY = n.y;
+    n.vy = min(n.vy + GRAVITY, MAX_FALL);
+    n.y += n.vy;
+    const float surface =
+        surfaceBelow(n.col * TILE, TILE, prevY, 4.0f, screenH);
+    if (surface < 0 || n.y < surface) {
+      if (n.y > screenH + FALL_RESET_DEPTH) {
+        // Down a pit: it drops out of the sky again where it fell.
+        n.y = skyY;
+        n.vy = 0;
+      }
+      continue;
+    }
+    n.y = surface;
+    n.vy = 0;
+
+    const float left = n.col * TILE;
+    const bool touching = p.x + PLAYER_W > left + 2 &&
+                          p.x < left + TILE - 2 && p.y > n.y - TILE &&
+                          p.y - boxHeight(p) < n.y;
+    if (!touching) {
+      n.armed = true;
+      continue;
+    }
+    if (!n.armed) continue;
+    if (!p.ducking) {
+      n.state = BeanState::Vine;
+      n.top = n.y;
+      audioPlayTone(1046, 120);
+    } else if (carriedBean() < 0) {
+      n.state = BeanState::Carried;  // it rides on the bird's back
+      audioPlayTone(784, 40);
+    }
+  }
+}
+
+// Put the carried bean in the cell just in front of the bird. False (it stays
+// on the bird's back) if something is in the way.
+bool placeBean(Bean& n, const Player& p, int16_t screenH) {
+  const int16_t col = p.facingRight ? columnAt(p.x + PLAYER_W - 0.01f) + 1
+                                    : columnAt(p.x) - 1;
+  const int16_t row =
+      static_cast<int16_t>(floorf((screenH - (p.y - 1)) / TILE));
+  if (col < 0 || col >= level->tiles || solidTile(col, row)) return false;
+  const float top = rowTop(row, screenH);
+  for (const auto& b : boxes) {
+    if (!b.broken && b.x < (col + 1) * TILE && b.x + b.w > col * TILE &&
+        b.y < top + TILE && b.y + b.h > top) {
+      return false;
+    }
+  }
+  n.state = BeanState::Free;
+  n.col = col;
+  n.y = rowBottom(row, screenH);
+  n.vy = 0;
+  n.armed = true;
+  audioPlayTone(523, 40);
+  return true;
+}
+
+// A vine the bird is touching, or -1.
+int findVine(const Player& p) {
+  for (int i = 0; i < BEAN_SLOTS; ++i) {
+    const Bean& n = beans[i];
+    if (n.state != BeanState::Vine) continue;
+    const float center = n.col * TILE + TILE / 2.0f;
+    if (fabsf(p.x + PLAYER_W / 2.0f - center) <= 12.0f && p.y > n.top - 4 &&
+        p.y - boxHeight(p) < n.y) {
+      return i;
+    }
+  }
+  return -1;
+}
+
+// Which sublevel (index into main.subs) a vine planted at (col, row) of the
+// map `here` leads to, or -1 if it leads nowhere. An exact spot beats a column
+// mark; the rest go to sublevel 0.
+int sublevelFor(const Level& here, const Level& main, int16_t col,
+                int16_t row) {
+  int wanted = -1;
+  for (const int16_t atRow : {row, static_cast<int16_t>(-1)}) {
+    for (uint8_t i = 0; wanted < 0 && i < here.spotCount; ++i) {
+      if (here.spots[i][0] == col && here.spots[i][1] == atRow) {
+        wanted = here.spots[i][2];
+      }
+    }
+  }
+  for (const int number : {wanted, 0}) {
+    for (uint8_t i = 0; i < main.subCount; ++i) {
+      if (main.subNumbers[i] == number) return i;
+    }
+  }
+  return -1;
+}
+
+// Everything in the main level that is kept while the bird is in a sublevel.
+struct AreaState {
+  Box boxes[BOX_SLOTS];
+  Egg eggs[BOX_SLOTS];
+  Rat rats[BOX_SLOTS];
+  Bean beans[BEAN_SLOTS];
+  Fox foxes[FOX_MAX];
+  Gorilla gorillas[MAX_GORILLAS];
+  bool goldTaken[LEVEL_MAX_GOLDS];
+  uint8_t goldCount;
+  bool infinityTaken[LEVEL_MAX_INFINITIES];
+  uint8_t infinityCount;
+};
+
+AreaState mainArea;
+
+void saveArea(const Gorilla* gorillas) {
+  memcpy(mainArea.boxes, boxes, sizeof(boxes));
+  memcpy(mainArea.eggs, eggs, sizeof(eggs));
+  memcpy(mainArea.rats, rats, sizeof(rats));
+  memcpy(mainArea.beans, beans, sizeof(beans));
+  memcpy(mainArea.foxes, foxes, sizeof(foxes));
+  memcpy(mainArea.gorillas, gorillas, sizeof(mainArea.gorillas));
+  memcpy(mainArea.goldTaken, goldTaken, sizeof(goldTaken));
+  mainArea.goldCount = goldCount;
+  memcpy(mainArea.infinityTaken, infinityTaken, sizeof(infinityTaken));
+  mainArea.infinityCount = infinityCount;
+}
+
+void restoreArea(Gorilla* gorillas) {
+  memcpy(boxes, mainArea.boxes, sizeof(boxes));
+  memcpy(eggs, mainArea.eggs, sizeof(eggs));
+  memcpy(rats, mainArea.rats, sizeof(rats));
+  memcpy(beans, mainArea.beans, sizeof(beans));
+  memcpy(foxes, mainArea.foxes, sizeof(foxes));
+  memcpy(gorillas, mainArea.gorillas, sizeof(mainArea.gorillas));
+  memcpy(goldTaken, mainArea.goldTaken, sizeof(goldTaken));
+  goldCount = mainArea.goldCount;
+  memcpy(infinityTaken, mainArea.infinityTaken, sizeof(infinityTaken));
+  infinityCount = mainArea.infinityCount;
+  clearParticles();
+  for (auto& c : corpses) c.active = false;
+  bumpedBox = nullptr;
+}
+
+// Take the carried bean out of the current area, if there is one.
+bool takeCarriedBean(Bean& out) {
+  const int i = carriedBean();
+  if (i < 0) return false;
+  out = beans[i];
+  beans[i].state = BeanState::None;
+  return true;
+}
+
+// Bring a carried bean into the current area.
+void giveCarriedBean(const Bean& bean) {
+  int slot = BOX_SLOTS;
+  while (slot < BEAN_SLOTS - 1 && beans[slot].state != BeanState::None) ++slot;
+  beans[slot] = bean;
+}
+
 // Big centered message over the game (level complete).
 void drawBanner(TFT_eSPI& d, const char* line1, const char* line2,
                 const char* line3) {
@@ -1103,21 +1736,49 @@ void respawn(Player& p, int16_t screenH) {
 }
 }  // namespace
 
-void drawSuperFlashyBirdsIcon(TFT_eSPI& d, const SuperFlashyAssets& assets,
-                              int16_t x, int16_t y) {
-  d.fillRect(x, y, 80, 58, SKY);
+void copySuperFlashySky(uint8_t* frame, int16_t offset) {
+  copySky(frame, offset, sfbSkyHeight);
+}
+
+void drawSuperFlashySkyThumbnail(TFT_eSPI& d, int16_t x, int16_t y, int16_t w,
+                                 int16_t h) {
+  uint8_t line[sfbSkyWidth];
+  for (int16_t dy = 0; dy < h; ++dy) {
+    skyRow(dy * sfbSkyHeight / h, line);
+    for (int16_t dx = 0; dx < w; ++dx) {
+      d.drawPixel(x + dx, y + dy, d.color8to16(line[dx * sfbSkyWidth / w]));
+    }
+  }
+}
+
+void drawSuperFlashyBirdsIcon(TFT_eSPI& d, int16_t x, int16_t y) {
+  drawSuperFlashySkyThumbnail(d, x, y, 80, 58);
   for (int16_t i = 0; i < 5; ++i) {
-    const uint16_t* tile = assets.grass.pixels();
+    const uint16_t* tile = sfbGrass;
     for (int16_t ty = 0; ty < 16; ++ty) {
       for (int16_t tx = 0; tx < 16; ++tx) {
-        const uint16_t c = tile[ty * 16 + tx];
+        const uint16_t c =
+            pgm_read_word(&tile[ty * 16 + tx]);
         if (c != SFB_TRANSPARENT) d.drawPixel(x + i * 16 + tx, y + 42 + ty, c);
       }
     }
   }
+  // A mystery box over a brick on the right edge, and a golden egg on the
+  // ground at the left.
+  const auto stamp = [&](const uint16_t* art, int16_t left, int16_t top) {
+    for (int16_t ty = 0; ty < 16; ++ty) {
+      for (int16_t tx = 0; tx < 16; ++tx) {
+        const uint16_t c = pgm_read_word(&art[ty * 16 + tx]);
+        if (c != SFB_TRANSPARENT) d.drawPixel(left + tx, top + ty, c);
+      }
+    }
+  };
+  stamp(sfbMystery, x + 64, y + 6);
+  stamp(sfbBox, x + 64, y + 22);
+  stamp(sfbGoldEgg, x, y + 26);
   for (int16_t ty = 0; ty < 32; ++ty) {
     for (int16_t tx = 0; tx < 16; ++tx) {
-      const uint16_t c = assets.bird.pixels()[ty * 16 + tx];
+      const uint16_t c = pgm_read_word(&sfbBird[ty * 16 + tx]);
       if (c != SFB_TRANSPARENT) d.drawPixel(x + 32 + tx, y + 14 + ty, c);
     }
   }
@@ -1128,18 +1789,16 @@ void runSuperFlashyBirds(TFT_eSPI& display) {
   const int16_t screenH = display.height();
 
   waitForButtonRelease();
-  SuperFlashyAssets assets;
-  if (!loadSuperFlashyAssets(assets)) {
-    return;
-  }
-  runtimeAssets = &assets;
   audioBegin();
 
   TFT_eSprite frame(&display);
   frame.setColorDepth(8);
   frame.createSprite(screenW, screenH);
   const bool useSprite = frame.created();
+  gFrameBuffer =
+      useSprite ? static_cast<uint8_t*>(frame.getPointer()) : nullptr;
 
+  level = &LEVELS[0];
   int16_t worldH = level->rows * TILE;  // physics "screenH": the world bottom
   float cameraYf = 0;
   bool snapCamera = true;
@@ -1148,10 +1807,9 @@ void runSuperFlashyBirds(TFT_eSPI& display) {
   respawn(p, worldH);
   Gorilla gorillas[MAX_GORILLAS];
   uint8_t levelIndex = 0;
-  level = &LEVELS[levelIndex];
   initGorillas(gorillas, worldH);
   initObjects(worldH);
-  Status status = {PLAYER_MAX_HP, 0, 0, 0};
+  Status status = {PLAYER_MAX_HP, 0, 0, START_LIVES};
   float visualSink = BIRD_SINK;
 
   // Double-press detection: when a direction button is pressed again within
@@ -1165,11 +1823,16 @@ void runSuperFlashyBirds(TFT_eSPI& display) {
   uint32_t levelMs = 0;  // time on the current level (running through deaths)
   uint32_t totalMs = 0;  // time across all levels
   uint32_t lastTick = millis();
-  bool gliding = false;       // second jump press in the air; ends on landing
+  bool gliding = false;       // toggled by jump in the air; ends on landing
   uint32_t lastFrame = millis();
   Button pendingDirection = Button::None;
   bool pendingJump = false;
   bool pendingCrouch = false;
+  int climbing = -1;          // index of the vine being climbed
+  bool inSublevel = false;
+  int16_t vineCol = 0;        // column of the vine that led to the sublevel
+  bool exitNeedsRelease = false;  // BTN3 was used for climbing
+  uint32_t crouchHoldStart = 0;   // crouch pressed while carrying a bean
 
   while (true) {
     const uint32_t now = millis();
@@ -1209,7 +1872,9 @@ void runSuperFlashyBirds(TFT_eSPI& display) {
 
     // Exit: hold BTN3 for EXIT_HOLD_MS.
     uint32_t exitHeld = 0;
-    if (held == Button::Button3) {
+    if (held != Button::Button3) exitNeedsRelease = false;
+    if (climbing >= 0 && held == Button::Button3) exitNeedsRelease = true;
+    if (held == Button::Button3 && !exitNeedsRelease) {
       if (exitHeldSince == 0) exitHeldSince = now;
       exitHeld = now - exitHeldSince;
       if (exitHeld >= EXIT_HOLD_MS) {
@@ -1223,12 +1888,33 @@ void runSuperFlashyBirds(TFT_eSPI& display) {
     const bool wantRight = held == Button::Button4;
     const bool wantJump = held == Button::Button3;
     if (wantLeft || wantRight) lastDirectionHeld = now;
+    // The world y of the highest the camera can see.
+    const float skyY = min<float>(0, worldH - screenH);
+
+    // A direction press steps off a vine.
+    if (climbing >= 0 &&
+        (event == Button::Button1 || event == Button::Button4)) {
+      climbing = -1;
+      p.vx = event == Button::Button1 ? -WALK_SPEED : WALK_SPEED;
+    }
+
     // A jump needs a fresh press (holding BTN3 to exit must not bounce).
     if (pendingJump) {
-      jumpBufferUntil = now + JUMP_BUFFER_MS;
       pendingJump = false;
-      // Pressing jump again while already in the air starts a glide.
-      if (!p.onGround) gliding = true;
+      const int vine = climbing < 0 ? findVine(p) : -1;
+      if (vine >= 0) {  // grab the vine
+        climbing = vine;
+        exitNeedsRelease = true;
+        exitHeldSince = 0;
+        jumpBufferUntil = 0;
+        gliding = false;
+        crouchWanted = false;
+        p.running = false;
+      } else if (climbing < 0) {
+        jumpBufferUntil = now + JUMP_BUFFER_MS;
+        // Pressing jump again while already in the air toggles the glide.
+        if (!p.onGround) gliding = !gliding;
+      }
     }
     const bool coasting = now - lastDirectionHeld < MOMENTUM_GRACE_MS;
 
@@ -1244,93 +1930,206 @@ void runSuperFlashyBirds(TFT_eSPI& display) {
     // BTN2 toggles the crouch (one block tall). If a block is overhead the bird
     // is held crouched even after toggling off, and stands up by itself as soon
     // as it is out from under it.
+    // Crouch toggles as usual. Carrying a bean, the toggle waits for the button
+    // to be let go: held for a second, it sets the bean down instead.
     if (pendingCrouch) {
-      crouchWanted = !crouchWanted;
       pendingCrouch = false;
-    }
-    p.ducking = crouchWanted || !hasHeadroom(p, worldH);
-    if (p.ducking) p.running = false;
-
-    // Horizontal movement (a crouched bird only walks slowly).
-    const float speedMul = now < status.speedBoostUntil ? BOOST_SPEED_FACTOR : 1.0f;
-    const float maxSpeed =
-        p.ducking ? CROUCH_SPEED : (p.running ? RUN_SPEED : WALK_SPEED) * speedMul;
-    if (wantLeft || wantRight) {
-      const float dir = wantLeft ? -1.0f : 1.0f;
-      p.facingRight = !wantLeft;
-      const float accel = p.onGround ? ACCEL : AIR_ACCEL;
-      p.vx += dir * accel;
-      if (fabsf(p.vx) > maxSpeed) {
-        p.vx = dir * maxSpeed;
+      if (climbing >= 0) {
+        // Held, it climbs down.
+      } else if (carriedBean() >= 0) {
+        crouchHoldStart = now;
+      } else {
+        crouchWanted = !crouchWanted;
       }
-    } else if (p.onGround && !coasting) {
-      p.vx = p.vx > 0 ? max(0.0f, p.vx - GROUND_FRICTION)
-                      : min(0.0f, p.vx + GROUND_FRICTION);
-    }  // no friction in the air: momentum carries the jump
-    if (p.ducking && p.onGround && fabsf(p.vx) > maxSpeed) {
-      // Crouching while moving fast: slow down to the crouch walking speed.
-      p.vx = p.vx > 0 ? max(maxSpeed, p.vx - GROUND_FRICTION)
-                      : min(-maxSpeed, p.vx + GROUND_FRICTION);
     }
-
-    // Jump (variable height) and gravity.
-    if (p.onGround && now < jumpBufferUntil) {
-      jumpBufferUntil = 0;
-      p.vy = now < status.jumpBoostUntil ? JUMP_VELOCITY * BOOST_JUMP_FACTOR
-                                          : JUMP_VELOCITY;
+    if (crouchHoldStart != 0) {
+      const int carried = carriedBean();
+      if (climbing >= 0 || carried < 0) {
+        crouchHoldStart = 0;
+      } else if (held != Button::Button2) {
+        crouchWanted = !crouchWanted;  // a short press
+        crouchHoldStart = 0;
+      } else if (now - crouchHoldStart >= BEAN_DROP_HOLD_MS) {
+        crouchHoldStart = 0;
+        if (placeBean(beans[carried], p, worldH)) {
+          crouchWanted = true;  // set down from a crouch
+          p.vx = 0;
+          lastDirectionHeld = 0;
+        }
+      }
+    }
+    if (climbing >= 0) {
+      // On a vine: hold jump to go up, crouch to go down, else hang. Blocks
+      // do not stop a climbing bird.
+      const Bean& vine = beans[climbing];
+      p.x = vine.col * TILE + (TILE - PLAYER_W) / 2.0f;
+      p.vx = 0;
+      p.vy = 0;
       p.onGround = false;
-      audioPlayTone(660, 25);
-    }
-    if (!wantJump && p.vy < JUMP_CUT_VELOCITY) {
-      p.vy = JUMP_CUT_VELOCITY;
-    }
-    // Gliding halves gravity (and the fall speed) while the bird is falling.
-    p.vy += (gliding && p.vy >= 0) ? GRAVITY * GLIDE_GRAVITY_FACTOR : GRAVITY;
-    const float maxFall = gliding ? MAX_FALL * GLIDE_MAX_FALL_FACTOR : MAX_FALL;
-    if (p.vy > maxFall) p.vy = maxFall;
+      p.ducking = false;
+      if (wantJump) p.y -= CLIMB_SPEED;
+      if (held == Button::Button2) p.y += CLIMB_SPEED;
+      if (p.y < vine.top) p.y = vine.top;
+      if (held == Button::Button2 && p.y >= vine.y) {  // climbed down
+        p.y = vine.y;
+        p.onGround = true;
+        climbing = -1;
+      }
+    } else {
+      p.ducking = crouchWanted || !hasHeadroom(p, worldH);
+      if (p.ducking) p.running = false;
 
-    const float prevX = p.x;
-    p.x += p.vx;
-    if (p.onGround && !p.ducking && fabsf(p.vx) > 0.3f) {
-      p.stride += p.running ? RUN_FRAMES_PER_TICK : WALK_FRAMES_PER_TICK;
-    } else if (p.onGround) {
-      p.stride = 0;  // start every walk from the first frame
+      // Horizontal movement (a crouched bird has its own speed).
+      const float speedMul = now < status.speedBoostUntil ? BOOST_SPEED_FACTOR : 1.0f;
+      const float maxSpeed =
+          p.ducking ? CROUCH_SPEED : (p.running ? RUN_SPEED : WALK_SPEED) * speedMul;
+      if (wantLeft || wantRight) {
+        const float dir = wantLeft ? -1.0f : 1.0f;
+        p.facingRight = !wantLeft;
+        const float accel = p.onGround ? ACCEL : AIR_ACCEL;
+        p.vx += dir * accel;
+        if (fabsf(p.vx) > maxSpeed) {
+          p.vx = dir * maxSpeed;
+        }
+      } else if (p.onGround && !coasting) {
+        p.vx = p.vx > 0 ? max(0.0f, p.vx - GROUND_FRICTION)
+                        : min(0.0f, p.vx + GROUND_FRICTION);
+      }  // no friction in the air: momentum carries the jump
+      if (p.ducking && p.onGround && fabsf(p.vx) > maxSpeed) {
+        // Crouching while moving fast: slow down to the crouch walking speed.
+        p.vx = p.vx > 0 ? max(maxSpeed, p.vx - GROUND_FRICTION)
+                        : min(-maxSpeed, p.vx + GROUND_FRICTION);
+      }
+
+      // Jump (variable height) and gravity.
+      if (p.onGround && now < jumpBufferUntil) {
+        jumpBufferUntil = 0;
+        p.vy = JUMP_VELOCITY;
+        p.onGround = false;
+        audioPlayTone(660, 25);
+      }
+      if (!wantJump && p.vy < JUMP_CUT_VELOCITY) {
+        p.vy = JUMP_CUT_VELOCITY;
+      }
+      // Gliding cuts gravity (and the fall speed) while the bird is falling.
+      p.vy += (gliding && p.vy >= 0) ? GRAVITY * GLIDE_GRAVITY_FACTOR : GRAVITY;
+      const float maxFall = gliding ? MAX_FALL * GLIDE_MAX_FALL_FACTOR : MAX_FALL;
+      if (p.vy > maxFall) p.vy = maxFall;
+
+      const float prevX = p.x;
+      // Gliding covers more ground; vx itself is untouched, so the extra speed
+      // ends as soon as the glide does.
+      p.x += gliding ? p.vx * GLIDE_SPEED_FACTOR : p.vx;
+      if (p.onGround && !p.ducking && fabsf(p.vx) > 0.3f) {
+        p.stride += p.running ? RUN_FRAMES_PER_TICK : WALK_FRAMES_PER_TICK;
+      } else if (p.onGround) {
+        p.stride = 0;  // start every walk from the first frame
+      }
+      p.y += p.vy;
+
+      // Keep the player inside the world's left and right bounds in the air.
+      if (p.x < 0) { p.x = 0; p.vx = 0; }
+      if (p.x + PLAYER_W > worldW()) { p.x = worldW() - PLAYER_W; p.vx = 0; }
+
+      // Land on a surface under the bird's center (a pit has none), bump the
+      // head on tile undersides, and block the sides of solid tiles.
+      p.onGround = landOnSurface(p, worldH);
+      resolveWalls(p, prevX, worldH);
+      bumpHead(p, worldH);
+      unstick(p, worldH);
     }
-    p.y += p.vy;
-
-    // Keep the player inside the world's left and right bounds in the air.
-    if (p.x < 0) { p.x = 0; p.vx = 0; }
-    if (p.x + PLAYER_W > worldW()) { p.x = worldW() - PLAYER_W; p.vx = 0; }
-
-    // Land on a surface under the bird's center (a pit has none), bump the
-    // head on tile undersides, and block the sides of solid tiles.
-    p.onGround = landOnSurface(p, worldH);
-    resolveWalls(p, prevX, worldH);
-    bumpHead(p, worldH);
-    unstick(p, worldH);
     if (p.onGround) gliding = false;
     const bool fell = p.y > worldH + FALL_RESET_DEPTH;
-    if (fell) audioPlayTone(220, 120);
+    if (fell && !inSublevel) audioPlayTone(220, 120);
 
+    if (bumpedBox != nullptr) {
+      knockEnemiesOn(*bumpedBox, gorillas, p.x + PLAYER_W / 2.0f);
+      bumpedBox = nullptr;
+    }
     updateGorillas(gorillas, p, worldH);
-    const bool levelDone = updateObjects(p, status, now, worldH);
-    if (fell || status.hp <= 0) {
-      respawn(p, worldH);
-      initGorillas(gorillas, worldH);
-      initObjects(worldH);
+    updateParticles();
+    updateCorpses(worldH);
+    bool levelDone = updateObjects(p, status, now, worldH);
+    updateBeans(p, worldH, skyY);
+    // Being bitten or bumped knocks the bird off a vine.
+    if (climbing >= 0 && (p.vx != 0 || p.vy != 0)) climbing = -1;
+
+    bool gameOver = false;
+    if (fell && inSublevel && status.hp > 0) {
+      // Falling out of a sublevel is safe: drop back in from the sky above the
+      // vine that led there.
+      Bean carriedAlong;
+      const bool bringBean = takeCarriedBean(carriedAlong);
+      inSublevel = false;
+      level = &LEVELS[levelIndex];
+      worldH = level->rows * TILE;
+      restoreArea(gorillas);
+      if (bringBean) giveCarriedBean(carriedAlong);
+      p = {static_cast<float>(vineCol * TILE),
+           min<float>(0, worldH - screenH),
+           0, 0, false, p.facingRight, false, false, 0};
       snapCamera = true;
       crouchWanted = false;
       gliding = false;
-      status = {PLAYER_MAX_HP, 0, 0, 0};
+      climbing = -1;
+    } else if (fell || status.hp <= 0) {
+      levelDone = false;  // dying on the nest does not count
+      gameOver = --status.lives <= 0;
+      climbing = -1;
+      if (!gameOver) {  // try this level again, from the main map
+        inSublevel = false;
+        level = &LEVELS[levelIndex];
+        worldH = level->rows * TILE;
+        respawn(p, worldH);
+        initGorillas(gorillas, worldH);
+        initObjects(worldH);
+        snapCamera = true;
+        crouchWanted = false;
+        gliding = false;
+        status = {PLAYER_MAX_HP, 0, 0, status.lives};
+      }
+    } else if (climbing >= 0 && p.y <= skyY + 0.5f) {
+      // Climbed off the top of the screen.
+      const Bean& vine = beans[climbing];
+      const int16_t row =
+          static_cast<int16_t>(lroundf((worldH - vine.y) / TILE));
+      const Level& main = LEVELS[levelIndex];
+      const int target = sublevelFor(*level, main, vine.col, row);
+      if (target >= 0) {
+        Bean carriedAlong;
+        const bool bringBean = takeCarriedBean(carriedAlong);
+        if (!inSublevel) {  // falling out later returns above this vine
+          vineCol = vine.col;
+          saveArea(gorillas);
+        }
+        inSublevel = true;
+        level = &main.subs[target];
+        worldH = level->rows * TILE;
+        respawn(p, worldH);
+        if (level->startRow < 0) {  // no S in the sublevel: drop in
+          p.y = min<float>(0, worldH - screenH);
+          p.onGround = false;
+        }
+        initGorillas(gorillas, worldH);
+        initObjects(worldH);
+        if (bringBean) giveCarriedBean(carriedAlong);
+        snapCamera = true;
+        crouchWanted = false;
+        gliding = false;
+        climbing = -1;
+        jumpBufferUntil = 0;
+        audioPlayTone(1568, 150);
+      }
     }
     // Ease the sink so the bird glides on and off boxes instead of popping.
     const float sinkTarget = targetSink(p, worldH);
     visualSink += constrain(sinkTarget - visualSink, -3.0f, 3.0f);
     const Hud hud = {
         exitHeld,
-        now < status.jumpBoostUntil ? status.jumpBoostUntil - now : 0,
         now < status.speedBoostUntil ? status.speedBoostUntil - now : 0,
-        status.hp, now < status.invulnUntil && (now / 100) % 2 == 0, visualSink,
+        status.hp, status.lives,
+        now < status.invulnUntil && (now / 100) % 2 == 0, gliding,
+        climbing >= 0, visualSink,
         levelMs, totalMs};
 
     // Camera follows the player, clamped to the world. A world shorter than
@@ -1351,26 +2150,39 @@ void runSuperFlashyBirds(TFT_eSPI& display) {
     TFT_eSPI& target = useSprite ? static_cast<TFT_eSPI&>(frame) : display;
     drawFrame(target, p, gorillas, cameraX, cameraY, worldH, hud);
     if (levelDone) {
-      char title[24], levelTime[16], totalTime[16], times[40];
-      snprintf(title, sizeof(title), "Level %d complete!", levelIndex + 1);
+      char title[40], levelTime[16], totalTime[16], times[40];
+      if (level->goldCount > 0) {
+        snprintf(title, sizeof(title), "Level %d complete!  Eggs %d/%d",
+                 levelIndex + 1, goldCount, level->goldCount);
+      } else {
+        snprintf(title, sizeof(title), "Level %d complete!", levelIndex + 1);
+      }
       formatTime(levelTime, sizeof(levelTime), levelMs);
       formatTime(totalTime, sizeof(totalTime), totalMs);
       snprintf(times, sizeof(times), "Level %s   Total %s", levelTime, totalTime);
       const bool last = levelIndex + 1 == LEVEL_COUNT;
       drawBanner(target, title, times,
                  last ? "All done! Back to level 1" : "Loading next level");
+    } else if (gameOver) {
+      drawBanner(target, "Game over", "Out of lives", "Back to level 1");
     }
     if (useSprite) frame.pushSprite(0, 0);
 
-    if (levelDone) {
-      audioPlayTone(1320, 80);
+    if (levelDone || gameOver) {
+      audioPlayTone(gameOver ? 160 : 1320, gameOver ? 300 : 80);
       delay(1800);
       lastTick = millis();
       levelMs = 0;
-      levelIndex = (levelIndex + 1) % LEVEL_COUNT;
-      if (levelIndex == 0) totalMs = 0;  // a new run after the last level
+      levelIndex = gameOver ? 0 : (levelIndex + 1) % LEVEL_COUNT;
+      if (levelIndex == 0) totalMs = 0;  // a new run
+      if (gameOver) {
+        status.hp = PLAYER_MAX_HP;
+        status.lives = START_LIVES;
+      }
       level = &LEVELS[levelIndex];
       worldH = level->rows * TILE;
+      inSublevel = false;
+      climbing = -1;
       snapCamera = true;
       crouchWanted = false;
       gliding = false;
@@ -1378,7 +2190,6 @@ void runSuperFlashyBirds(TFT_eSPI& display) {
       initGorillas(gorillas, worldH);
       initObjects(worldH);
       status.invulnUntil = 0;
-      status.jumpBoostUntil = 0;
       status.speedBoostUntil = 0;
       visualSink = BIRD_SINK;
       jumpBufferUntil = 0;
@@ -1388,7 +2199,6 @@ void runSuperFlashyBirds(TFT_eSPI& display) {
 
   audioEnd();
   frame.deleteSprite();
-  runtimeAssets = nullptr;
-  assets.release();
+  gFrameBuffer = nullptr;
   waitForButtonRelease();
 }

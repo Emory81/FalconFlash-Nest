@@ -9,6 +9,7 @@
 #include "audio/audio_helper.h"
 #include "input/button_input.h"
 #include "game_assets.h"
+#include "games/building_mask.h"
 #include "leaderboard.h"
 
 namespace {
@@ -60,7 +61,7 @@ constexpr float TILT_SCALE = 0.6f;
 constexpr uint32_t FLAP_FRAME_MS = 110;
 // One constant gravity for the whole arc, so the rise and fall are symmetric.
 constexpr float GRAVITY = 0.96f;
-// Extra downward acceleration per frame while button 2 is held, and the cap.
+// Extra downward acceleration per frame while button 4 is held, and the cap.
 constexpr float DIVE_ACCEL = 2.0f;
 constexpr float DIVE_MAX_VELOCITY = 16.0f;
 // One game in this many is played at night: night background and pipes
@@ -78,6 +79,16 @@ constexpr float PIPE_SPEED_MAX = 9.2f;
 constexpr float PIPE_FREQUENCY = 1.5f;
 constexpr int16_t PIPE_SPAWN_MARGIN = 20;
 constexpr uint8_t MAX_PIPES = 4;
+
+// Chimney smoke: gray puffs that start hidden behind the roof, then rise,
+// grow and drift right until they leave the top of the screen.
+constexpr uint8_t SMOKE_PUFFS = 11;
+constexpr uint32_t SMOKE_LIFETIME_MS = 9500;  // lower rises faster
+constexpr float SMOKE_X = 38.0f;
+constexpr float SMOKE_Y = 96.0f;
+constexpr float SMOKE_DRIFT = 22.0f;
+constexpr float SMOKE_START_RADIUS = 6.0f;
+constexpr float SMOKE_END_RADIUS = 23.0f;
 
 struct Pipe {
   float x;
@@ -113,7 +124,7 @@ void drawBackButton(TFT_eSPI& display) {
   display.setTextSize(1);
   display.setTextColor(TFT_WHITE, TFT_BLACK);
   display.setTextDatum(MC_DATUM);
-  display.drawString("BTN4 Back", BACK_BUTTON_X + BACK_BUTTON_W / 2,
+  display.drawString("BTN3 Back", BACK_BUTTON_X + BACK_BUTTON_W / 2,
                      BACK_BUTTON_Y + BACK_BUTTON_H / 2);
 }
 
@@ -196,12 +207,69 @@ void drawSpriteRotatedInBand(TFT_eSPI& display, int16_t centerX,
   }
 }
 
+// A filled circle that only shows where the building does not cover it. The
+// display may be a strip of the screen starting at row bandTop.
+void drawSmokePuff(TFT_eSPI& display, int16_t centerX, int16_t centerY,
+                   int16_t radius, uint16_t color, int16_t bandTop) {
+  for (int16_t dy = -radius; dy <= radius; ++dy) {
+    const int16_t y = centerY + dy;
+    if (y < bandTop || y >= bandTop + display.height()) {
+      continue;
+    }
+    const int16_t halfW =
+        static_cast<int16_t>(sqrtf(radius * radius + radius - dy * dy));
+    for (int16_t x = centerX - halfW; x <= centerX + halfW; ++x) {
+      if (x < 0 || x >= BUILDING_MASK_WIDTH) {
+        continue;
+      }
+      if (y < BUILDING_MASK_HEIGHT &&
+          (pgm_read_byte(&buildingMask[y * (BUILDING_MASK_WIDTH / 8) + x / 8]) &
+           (0x80 >> (x % 8)))) {
+        continue;
+      }
+      display.drawPixel(x, y - bandTop, color);
+    }
+  }
+}
+
+// Positions come from the clock, so the smoke needs no state and keeps the same
+// pace whatever the frame rate.
+// `now` is the same for every strip of one frame.
+void drawSmoke(TFT_eSPI& display, uint32_t now, int16_t bandTop = 0) {
+  // Grays that survive the 8-bit sprite without picking up a tint.
+  constexpr uint16_t LIGHT = 0xB5B5;
+  constexpr uint16_t MID = 0x9495;
+  constexpr uint16_t DARK = 0x4A4A;
+  constexpr uint16_t SHADES[] = {LIGHT, MID, LIGHT, DARK, LIGHT, MID,
+                                 LIGHT, MID, DARK, LIGHT, MID};
+  // Sideways and size variation so the column looks lumpy.
+  constexpr int8_t JITTER_X[] = {0, -8, 7, -4, 10, -9, 3, -6, 8, -2, 5};
+  constexpr int8_t JITTER_R[] = {0, -2, 2, -3, 1, 0, 3, -1, -2, 2, -1};
+
+  for (uint8_t i = 0; i < SMOKE_PUFFS; ++i) {
+    const float age =
+        ((now + i * SMOKE_LIFETIME_MS / SMOKE_PUFFS) % SMOKE_LIFETIME_MS) /
+        static_cast<float>(SMOKE_LIFETIME_MS);
+    // Puffs billow out quickly, then hold their size.
+    const float growth = min(1.0f, age * 1.8f);
+    const float radius = SMOKE_START_RADIUS +
+                         (SMOKE_END_RADIUS + JITTER_R[i] - SMOKE_START_RADIUS) *
+                             growth;
+    // The end point is fully above the screen.
+    const float y =
+        SMOKE_Y - age * (SMOKE_Y + SMOKE_END_RADIUS + 5.0f);
+    const float x = SMOKE_X + SMOKE_DRIFT * age + JITTER_X[i] * growth;
+    drawSmokePuff(display, lroundf(x), lroundf(y), lroundf(radius), SHADES[i],
+                  bandTop);
+  }
+}
+
 // Full-screen background, day or night. The images are RGB332, the same
 // layout as the 8-bit sprite's buffer, so the sprite path is a single memcpy.
 // Without a sprite the day image goes straight to the screen.
 void drawBackground(TFT_eSPI& display, TFT_eSprite* sprite,
                     const FlappyAssets& assets) {
-  // The image must match the screen exactly (re-run tools/convert_sprites.py
+  // The image must match the screen exactly (re-run tools/generate_game_assets.py
   // if the display size changes); otherwise rows would be misaligned.
   if (display.width() != BACKGROUND_WIDTH ||
       display.height() != BACKGROUND_HEIGHT) {
@@ -212,9 +280,11 @@ void drawBackground(TFT_eSPI& display, TFT_eSprite* sprite,
   const uint8_t* image = assets.background.data;
   if (sprite != nullptr) {
     memcpy(sprite->getPointer(), image, assets.background.size);
+    drawSmoke(*sprite, millis());
   } else {
     display.pushImage(0, 0, BACKGROUND_WIDTH, BACKGROUND_HEIGHT,
                       const_cast<uint8_t*>(image), true);
+    drawSmoke(display, millis());
   }
 }
 
@@ -453,7 +523,7 @@ void drawGameOver(TFT_eSPI& display, uint32_t score, uint32_t best,
   display.drawString(line, centerX, panelY + 186);
 
   display.setTextColor(TFT_WHITE, PANEL_BG);
-  display.drawString("BTN3 Play again   BTN4 Back", centerX,
+  display.drawString("BTN1 Play again   BTN3 Back", centerX,
                      panelY + PANEL_H - 18);
 }
 }  // namespace
@@ -501,7 +571,7 @@ void runFlappyBird(TFT_eSPI& display) {
       const uint32_t now = millis();
       const Button button = readButtonEvent();
       const Button held = readButton();
-      if (button == Button::Button4) {
+      if (button == Button::Button3) {
         leaderboardAddFlaps("flappy", roundFlaps);  // quitting still counts
         audioEnd();
         frameBand.deleteSprite();
@@ -532,7 +602,7 @@ void runFlappyBird(TFT_eSPI& display) {
       }
 
       birdVelocity += GRAVITY;
-      if (held == Button::Button2) {
+      if (held == Button::Button4) {
         birdVelocity += DIVE_ACCEL;
         if (birdVelocity > DIVE_MAX_VELOCITY) birdVelocity = DIVE_MAX_VELOCITY;
       }
@@ -597,11 +667,13 @@ void runFlappyBird(TFT_eSPI& display) {
       }
 
       if (useBands) {
+        const uint32_t frameTime = millis();
         for (int16_t bandTop = 0; bandTop < screenH;
              bandTop += FRAME_BAND_HEIGHT) {
           memcpy(frameBand.getPointer(),
                  assets.background.data + bandTop * screenW,
                  screenW * FRAME_BAND_HEIGHT);
+          drawSmoke(frameBand, frameTime, bandTop);
           drawFrameInBand(frameBand, assets, bandTop, screenH, birdY,
                           birdVelocity, pipeSpeed, pipes, pipeCount, score,
                           bestAtStart, flapStartedAt);
@@ -626,17 +698,19 @@ void runFlappyBird(TFT_eSPI& display) {
     drawBackground(display, nullptr, assets);
     drawGameOver(display, score, best, newBest, top, topCount, totalFlaps);
     playGameOverSound();
+    // BTN1 also flaps, so ignore a press carried over from the crash.
+    waitForButtonRelease();
 
     while (true) {
       const Button button = readButtonEvent();
-      if (button == Button::Button4) {
+      if (button == Button::Button3) {
         audioEnd();
         frameBand.deleteSprite();
         assets.release();
         waitForButtonRelease();
         return;
       }
-      if (button == Button::Button3) {
+      if (button == Button::Button1) {
         waitForButtonRelease();
         break;
       }

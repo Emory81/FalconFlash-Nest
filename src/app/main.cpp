@@ -781,7 +781,9 @@ void showGamesFromTimeline(TFT_eSprite& screen, bool& useSprite,
   screen.deleteSprite();
   useSprite = false;
 
-  showGameMenu(tft);
+  if (showGameMenu(tft, true)) {
+    enterStandby(true);  // held BTN3: turn off
+  }
 
   // Recreate the timeline buffer after the game has released its buffer.
   useSprite = createTimelineSprite(screen);
@@ -1292,7 +1294,7 @@ void setup() {
   const bool demoMode = detectDemoMode();
   if (deviceConfig().gameModeOnly) {
     checkForFirmwareUpdate(tft, static_cast<uint8_t>(wakeButton));
-    showGameMenu(tft, true);
+    showGameMenu(tft, false);  // nothing to go back to
     enterStandby(true);
     return;
   }

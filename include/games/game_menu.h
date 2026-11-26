@@ -2,4 +2,6 @@
 
 #include <TFT_eSPI.h>
 
-bool showGameMenu(TFT_eSPI& display, bool gameModeOnly = false);
+// Runs until the player holds BTN3 to shut off (returns true) or, when
+// canGoBack, holds BTN4 to leave the menu (returns false).
+bool showGameMenu(TFT_eSPI& display, bool canGoBack);

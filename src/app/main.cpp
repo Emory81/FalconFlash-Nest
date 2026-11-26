@@ -397,11 +397,8 @@ Button waitForPowerButton() {
   while (true) {
     const Button button = readButtonEvent();
     if (button != Button::None) {
-      // Game Mode uses the radio only while it checks for an update and
-      // missing game files. Ordering still connects as soon as it wakes.
-      if (!deviceConfig().gameModeOnly) {
-        startDeviceWiFi();
-      }
+      // Wi-Fi starts later, in setup(), after the battery has been checked
+      // with the radio still off.
       waitForButtonRelease();
       return button;
     }
@@ -427,6 +424,26 @@ void enterStandby(bool playShutdownSound) {
   esp_sleep_enable_ext1_wakeup(1ULL << BUTTON_WAKE_PIN,
                                 ESP_EXT1_WAKEUP_ALL_LOW);
   esp_deep_sleep_start();
+}
+
+// Runs on the battery task when the battery stays under the cutoff while the
+// device is on. No chime: the sound code is not safe to start from there.
+void shutDownForLowBattery() { enterStandby(false); }
+
+// Powering on with the battery under the cutoff: say so for 2 seconds, then
+// go straight back to sleep.
+void showChargeWarningAndSleep() {
+  tft.init();
+  tft.setRotation(DISPLAY_ROTATION);
+  tft.fillScreen(TFT_BLACK);
+  tft.setTextFont(1);
+  tft.setTextSize(3);
+  tft.setTextColor(TFT_RED, TFT_BLACK);
+  tft.setTextDatum(MC_DATUM);
+  tft.drawString("PLEASE CHARGE!", tft.width() / 2, tft.height() / 2);
+  digitalWrite(BACKLIGHT_PIN, HIGH);
+  delay(2000);
+  enterStandby(false);
 }
 
 void drawGameButton(TFT_eSPI& display) {
@@ -1289,6 +1306,11 @@ void setup() {
   const Button wakeButton =
       otaResumeButton == 0 ? waitForPowerButton()
                            : static_cast<Button>(otaResumeButton);
+  // Measure before Wi-Fi, the screen, or any sound load the battery.
+  if (batteryBelowCutoff()) {
+    showChargeWarningAndSleep();
+  }
+  setBatteryCutoffHandler(shutDownForLowBattery);
   // Kick WiFi immediately so connect overlaps splash + boot sound.
   // Game Mode waits until after the boot sound, then only long enough to
   // update and fetch missing pictures.

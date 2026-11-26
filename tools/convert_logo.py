@@ -18,16 +18,18 @@ def main() -> None:
     if not SRC.exists():
         raise FileNotFoundError(f"Logo not found at {SRC}")
 
-    # Blend over the black splash screen using the alpha channel, which keeps
-    # the grey shades and smooth edges.
+    # The PNG's color is tinted, so the mark is rebuilt as white using alpha
+    # as coverage. Solid parts snap to white; softer edges stay neutral gray
+    # on the black splash.
     image = Image.open(SRC).convert("RGBA")
     width, height = image.size
 
     pixels: list[int] = []
     for y in range(height):
         for x in range(width):
-            r, g, b, a = image.getpixel((x, y))
-            pixels.append(rgb_to_rgb565(r * a // 255, g * a // 255, b * a // 255))
+            _r, _g, _b, alpha = image.getpixel((x, y))
+            level = 255 if alpha >= 200 else alpha * 255 // 200
+            pixels.append(rgb_to_rgb565(level, level, level))
 
     OUT.parent.mkdir(parents=True, exist_ok=True)
     lines = [

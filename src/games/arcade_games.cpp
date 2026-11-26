@@ -9,8 +9,8 @@
 #include "audio/audio_helper.h"
 #include "game_assets.h"
 #include "input/button_input.h"
+#include "super_flashy_art.h"
 #include "super_flashy_birds.h"
-#include "super_flashy_sprites.h"
 
 // Controls (only one button can be read at a time):
 //   Tic Tac Toe:          BTN1 left (hold: place), BTN2 up, BTN3 down,
@@ -287,8 +287,8 @@ void drawArt(TFT_eSPI& d, int16_t x, int16_t y, int16_t w, int16_t h,
   for (int16_t dy = 0; dy < destH; ++dy) {
     for (int16_t dx = 0; dx < destW; ++dx) {
       const int16_t sx = dx * w / destW;
-      const uint16_t c = pgm_read_word(
-          &pixels[(dy * h / destH) * w + (flip ? w - 1 - sx : sx)]);
+      if (pixels == nullptr) return;
+      const uint16_t c = pixels[(dy * h / destH) * w + (flip ? w - 1 - sx : sx)];
       if (c != SFB_TRANSPARENT) d.drawPixel(x + dx, y + dy, c);
     }
   }
@@ -793,7 +793,19 @@ void runBrickBreaker(TFT_eSPI& display) {
 
 void runRunner(TFT_eSPI& display) {
   FlappyAssets assets;
-  loadFlappyAssets(assets);
+  SuperFlashyAssets sprites;
+  if (!loadFlappyAssets(assets) || !loadSuperFlashyAssets(sprites)) {
+    assets.release();
+    sprites.release();
+    display.fillScreen(TFT_BLACK);
+    display.setTextDatum(MC_DATUM);
+    display.setTextColor(TFT_WHITE, TFT_BLACK);
+    display.drawString("Game art unavailable", display.width() / 2,
+                       display.height() / 2);
+    delay(1200);
+    return;
+  }
+  bindSuperFlashyArt(sprites);
   assets.background.release();  // not used here, and it is big
   uint32_t best = loadRunnerBest();
   float x = RUNNER_X;
@@ -938,6 +950,7 @@ void runRunner(TFT_eSPI& display) {
   // Quitting in the middle of a run still counts it.
   if (distance / 10 > best) saveRunnerBest(distance / 10);
   assets.release();
+  sprites.release();
 }
 
 void runPong(TFT_eSPI& display, bool twoPlayer) {

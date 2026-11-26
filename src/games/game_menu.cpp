@@ -301,11 +301,13 @@ bool showGameMenu(TFT_eSPI& display, bool canGoBack) {
   ensureGameAssets(display);
 
   FlappyAssets assets;
-  SuperFlashyAssets unused;  // Super Flashy Birds carries its own pictures
-  if (!takePreloadedGameAssets(assets, unused)) {
+  SuperFlashyAssets menuArt;
+  if (!takePreloadedGameAssets(assets, menuArt)) {
     loadMenuAssets(display, assets);
   }
-  unused.release();
+  menuArt.release();
+  loadSuperFlashyMenuArt(menuArt);
+  bindSuperFlashyArt(menuArt);
   drawMenu(display, selectedIndex, assets, canGoBack);
 
   Button holding = Button::None;  // BTN3, or BTN4 when it can go back
@@ -353,8 +355,11 @@ bool showGameMenu(TFT_eSPI& display, bool canGoBack) {
         } else if (tap) {
           waitForButtonRelease();
           assets.release();
+          menuArt.release();
           launchSelectedGame(display, gameAt(selectedIndex));
           loadMenuAssets(display, assets);
+          loadSuperFlashyMenuArt(menuArt);
+          bindSuperFlashyArt(menuArt);
           drawMenu(display, selectedIndex, assets, canGoBack);
         }
         holding = Button::None;
@@ -371,6 +376,7 @@ bool showGameMenu(TFT_eSPI& display, bool canGoBack) {
         // A button still held would wake the device straight back up.
         waitForButtonRelease();
         assets.release();
+        menuArt.release();
         return off;
       } else if (held >= SELECT_MAX_MS) {
         drawHoldBar(display, showingBar, held, needed);

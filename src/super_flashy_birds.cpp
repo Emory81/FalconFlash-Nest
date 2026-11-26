@@ -5,9 +5,10 @@
 #include <cmath>
 
 #include "audio/audio_helper.h"
+#include "game_assets.h"
 #include "input/button_input.h"
+#include "super_flashy_art.h"
 #include "super_flashy_levels.h"
-#include "super_flashy_sprites.h"
 
 // Controls (one resistor-ladder ADC, so only one button reads at a time):
 //   BTN1 left, BTN4 right, BTN3 jump, BTN2 duck (fast-fall in the air).
@@ -206,8 +207,8 @@ struct Egg {
   EggKind kind;
 };
 
-constexpr int16_t RAT_W = sfbRatWidth;   // sizes follow the art
-constexpr int16_t RAT_H = sfbRatHeight;
+constexpr int16_t RAT_W = 30;  // super/rat.rgb565
+constexpr int16_t RAT_H = 19;
 constexpr int16_t RAT_SINK = 0;
 
 struct Rat {
@@ -241,8 +242,8 @@ constexpr uint32_t INVULN_MS = 1500;
 constexpr float HURT_KNOCKBACK = 3.5f;
 constexpr float HURT_POP = -5.0f;
 
-constexpr int16_t NEST_W = sfbNestWidth;
-constexpr int16_t NEST_H = sfbNestHeight;
+constexpr int16_t NEST_W = 40;  // super/nest.rgb565
+constexpr int16_t NEST_H = 23;
 constexpr int16_t NEST_SINK = 0;
 
 Box boxes[BOX_SLOTS];  // slots from BOX_MAX on are nests (goals)
@@ -253,8 +254,8 @@ Rat rats[BOX_SLOTS];   // rats[i] hatched from eggs[i]
 // leap high, and at the top of the leap pounce forward.
 enum class FoxState : uint8_t { Idle, Prowl, Windup, Leap, Pounce, Recover };
 
-constexpr int16_t FOX_W = sfbFoxWidth;   // sizes follow the art
-constexpr int16_t FOX_H = sfbFoxHeight;
+constexpr int16_t FOX_W = 38;  // super/fox.rgb565
+constexpr int16_t FOX_H = 20;
 constexpr float FOX_RUN_SPEED = 2.8f;          // faster than a walking bird
 constexpr float FOX_WAKE_DIST = 180.0f;
 constexpr float FOX_POUNCE_RANGE = 110.0f;
@@ -685,10 +686,15 @@ uint8_t* gFrameBuffer = nullptr;
 
 // Unpack one row of the sky (RGB332) into `line`, sfbSkyWidth pixels long.
 void skyRow(int16_t y, uint8_t* line) {
-  const uint8_t* run = sfbSkyRuns + pgm_read_word(&sfbSkyRows[y]);
+  if (sfbSkyRuns == nullptr || sfbSkyRows == nullptr || y < 0 ||
+      y >= sfbSkyHeight) {
+    memset(line, 0, sfbSkyWidth);
+    return;
+  }
+  const uint8_t* run = sfbSkyRuns + sfbSkyRows[y];
   for (int16_t x = 0; x < sfbSkyWidth; run += 2) {
-    const uint8_t length = pgm_read_byte(run);
-    memset(line + x, pgm_read_byte(run + 1), length);
+    const uint8_t length = run[0];
+    memset(line + x, run[1], length);
     x += length;
   }
 }
@@ -1753,6 +1759,7 @@ void drawSuperFlashySkyThumbnail(TFT_eSPI& d, int16_t x, int16_t y, int16_t w,
 
 void drawSuperFlashyBirdsIcon(TFT_eSPI& d, int16_t x, int16_t y) {
   drawSuperFlashySkyThumbnail(d, x, y, 80, 58);
+  if (sfbGrass == nullptr || sfbBird == nullptr) return;
   for (int16_t i = 0; i < 5; ++i) {
     const uint16_t* tile = sfbGrass;
     for (int16_t ty = 0; ty < 16; ++ty) {
@@ -1785,6 +1792,17 @@ void drawSuperFlashyBirdsIcon(TFT_eSPI& d, int16_t x, int16_t y) {
 }
 
 void runSuperFlashyBirds(TFT_eSPI& display) {
+  SuperFlashyAssets art;
+  if (!loadSuperFlashyAssets(art)) {
+    display.fillScreen(TFT_BLACK);
+    display.setTextDatum(MC_DATUM);
+    display.setTextColor(TFT_WHITE, TFT_BLACK);
+    display.drawString("Game art unavailable", display.width() / 2,
+                       display.height() / 2);
+    delay(1200);
+    return;
+  }
+  bindSuperFlashyArt(art);
   const int16_t screenW = display.width();
   const int16_t screenH = display.height();
 
@@ -2200,5 +2218,6 @@ void runSuperFlashyBirds(TFT_eSPI& display) {
   audioEnd();
   frame.deleteSprite();
   gFrameBuffer = nullptr;
+  art.release();
   waitForButtonRelease();
 }

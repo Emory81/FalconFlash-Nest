@@ -16,6 +16,7 @@
 #include <cstring>
 
 #include "device_config.h"
+#include "super_flashy_art.h"
 
 namespace {
 
@@ -23,7 +24,7 @@ constexpr char CACHE_ROOT[] = "/game_assets";
 constexpr char MANIFEST_PATH[] = "/game_assets/manifest.txt";
 constexpr char MANIFEST_PART_PATH[] = "/game_assets/manifest.txt.part";
 constexpr char MANIFEST_BACKUP_PATH[] = "/game_assets/manifest.txt.bak";
-constexpr uint8_t MAX_MANIFEST_ENTRIES = 40;
+constexpr uint8_t MAX_MANIFEST_ENTRIES = 52;
 constexpr uint16_t HASH_HEX_LENGTH = 64;
 constexpr uint32_t HTTP_TIMEOUT_MS = 12000;
 constexpr uint32_t RETRY_DELAY_MS = 1000;
@@ -515,23 +516,16 @@ void assetMemoryPreloadTask(void*) {
   }
 
   FlappyAssets flappyAssets;
-  SuperFlashyAssets superAssets;
-  const bool succeeded = initGameAssets() &&
-                         loadFlappyAssets(flappyAssets) &&
-                         loadSuperFlashyAssets(superAssets);
+  const bool succeeded = initGameAssets() && loadFlappyAssets(flappyAssets);
   if (succeeded) {
     lockFilesystem();
     preloadedFlappyAssets.release();
-    preloadedSuperFlashyAssets.release();
     preloadedFlappyAssets = flappyAssets;
-    preloadedSuperFlashyAssets = superAssets;
     flappyAssets = FlappyAssets{};
-    superAssets = SuperFlashyAssets{};
     assetMemoryPreloadReady = true;
     unlockFilesystem();
   } else {
     flappyAssets.release();
-    superAssets.release();
   }
 
   assetMemoryPreloadRunning = false;
@@ -544,8 +538,9 @@ bool loadImage(const ManifestEntry* entries, size_t count, const char* path,
                GameAssetImage& image) {
   ManifestEntry entry{};
   if (!findManifestEntry(entries, count, path, entry) ||
-      strcmp(entry.format, format) != 0 || entry.width != width ||
-      entry.height != height) {
+      strcmp(entry.format, format) != 0 ||
+      (width != 0 && entry.width != width) ||
+      (height != 0 && entry.height != height)) {
     return false;
   }
 
@@ -626,20 +621,35 @@ void SuperFlashyAssets::release() {
   bird.release();
   for (auto& frame : walk) frame.release();
   duck.release();
+  dive.release();
   gorilla.release();
   redGorilla.release();
   dirt.release();
+  dirtShadow.release();
   grass.release();
   box.release();
   mystery.release();
   mysteryOff.release();
   egg.release();
   blueEgg.release();
+  greenEgg.release();
   rat.release();
   fox.release();
   nest.release();
   eggCracking.release();
   eggOpen.release();
+  goldEgg.release();
+  infinityEgg.release();
+  bean.release();
+  arrowRight.release();
+  arrowLeft.release();
+  arrowUp.release();
+  arrowDown.release();
+  grassyArrowRight.release();
+  grassyArrowLeft.release();
+  grassyArrowUp.release();
+  grassyArrowDown.release();
+  sky.release();
 }
 
 bool initGameAssets() {
@@ -813,55 +823,258 @@ bool loadSuperFlashyAssets(SuperFlashyAssets& assets) {
   size_t count = 0;
   if (!loadManifestEntries(entries, count)) return false;
 
+  const auto load = [&](const char* path, const char* format,
+                        GameAssetImage& image) {
+    return loadOneImage(path, format, 0, 0, image, entries, count);
+  };
   bool ok =
-      loadOneImage("super/bird.rgb565", "rgb565", 16, 32, assets.bird,
-                   entries, count) &&
-      loadOneImage("super/walk0.rgb565", "rgb565", 32, 32, assets.walk[0],
-                   entries, count) &&
-      loadOneImage("super/walk1.rgb565", "rgb565", 32, 32, assets.walk[1],
-                   entries, count) &&
-      loadOneImage("super/walk2.rgb565", "rgb565", 32, 32, assets.walk[2],
-                   entries, count) &&
-      loadOneImage("super/walk3.rgb565", "rgb565", 32, 32, assets.walk[3],
-                   entries, count) &&
-      loadOneImage("super/walk4.rgb565", "rgb565", 32, 32, assets.walk[4],
-                   entries, count) &&
-      loadOneImage("super/walk5.rgb565", "rgb565", 32, 32, assets.walk[5],
-                   entries, count) &&
-      loadOneImage("super/walk6.rgb565", "rgb565", 32, 32, assets.walk[6],
-                   entries, count) &&
-      loadOneImage("super/walk7.rgb565", "rgb565", 32, 32, assets.walk[7],
-                   entries, count) &&
-      loadOneImage("super/duck.rgb565", "rgb565", 31, 24, assets.duck,
-                   entries, count) &&
-      loadOneImage("super/gorilla.rgb565", "rgb565", 23, 20, assets.gorilla,
-                   entries, count) &&
-      loadOneImage("super/red_gorilla.rgb565", "rgb565", 23, 20,
-                   assets.redGorilla, entries, count) &&
-      loadOneImage("super/dirt.rgb565", "rgb565", 16, 16, assets.dirt,
-                   entries, count) &&
-      loadOneImage("super/grass.rgb565", "rgb565", 16, 16, assets.grass,
-                   entries, count) &&
-      loadOneImage("super/box.rgb565", "rgb565", 16, 16, assets.box,
-                   entries, count) &&
-      loadOneImage("super/mystery.rgb565", "rgb565", 16, 16, assets.mystery,
-                   entries, count) &&
-      loadOneImage("super/mystery_off.rgb565", "rgb565", 16, 16,
-                   assets.mysteryOff, entries, count) &&
-      loadOneImage("super/egg.rgb565", "rgb565", 16, 16, assets.egg,
-                   entries, count) &&
-      loadOneImage("super/blue_egg.rgb565", "rgb565", 16, 16,
-                   assets.blueEgg, entries, count) &&
-      loadOneImage("super/rat.rgb565", "rgb565", 24, 10, assets.rat,
-                   entries, count) &&
-      loadOneImage("super/fox.rgb565", "rgb565", 35, 24, assets.fox,
-                   entries, count) &&
-      loadOneImage("super/nest.rgb565", "rgb565", 40, 23, assets.nest,
-                   entries, count) &&
-      loadOneImage("super/egg_cracking.rgb565", "rgb565", 16, 16,
-                   assets.eggCracking, entries, count) &&
-      loadOneImage("super/egg_open.rgb565", "rgb565", 16, 16,
-                   assets.eggOpen, entries, count);
+      load("super/bird.rgb565", "rgb565", assets.bird) &&
+      load("super/walk0.rgb565", "rgb565", assets.walk[0]) &&
+      load("super/walk1.rgb565", "rgb565", assets.walk[1]) &&
+      load("super/walk2.rgb565", "rgb565", assets.walk[2]) &&
+      load("super/walk3.rgb565", "rgb565", assets.walk[3]) &&
+      load("super/walk4.rgb565", "rgb565", assets.walk[4]) &&
+      load("super/walk5.rgb565", "rgb565", assets.walk[5]) &&
+      load("super/walk6.rgb565", "rgb565", assets.walk[6]) &&
+      load("super/walk7.rgb565", "rgb565", assets.walk[7]) &&
+      load("super/duck.rgb565", "rgb565", assets.duck) &&
+      load("super/dive.rgb565", "rgb565", assets.dive) &&
+      load("super/gorilla.rgb565", "rgb565", assets.gorilla) &&
+      load("super/red_gorilla.rgb565", "rgb565", assets.redGorilla) &&
+      load("super/dirt.rgb565", "rgb565", assets.dirt) &&
+      load("super/dirt_shadow.rgb565", "rgb565", assets.dirtShadow) &&
+      load("super/grass.rgb565", "rgb565", assets.grass) &&
+      load("super/box.rgb565", "rgb565", assets.box) &&
+      load("super/mystery.rgb565", "rgb565", assets.mystery) &&
+      load("super/mystery_off.rgb565", "rgb565", assets.mysteryOff) &&
+      load("super/egg.rgb565", "rgb565", assets.egg) &&
+      load("super/blue_egg.rgb565", "rgb565", assets.blueEgg) &&
+      load("super/green_egg.rgb565", "rgb565", assets.greenEgg) &&
+      load("super/rat.rgb565", "rgb565", assets.rat) &&
+      load("super/fox.rgb565", "rgb565", assets.fox) &&
+      load("super/nest.rgb565", "rgb565", assets.nest) &&
+      load("super/egg_cracking.rgb565", "rgb565", assets.eggCracking) &&
+      load("super/egg_open.rgb565", "rgb565", assets.eggOpen) &&
+      load("super/gold_egg.rgb565", "rgb565", assets.goldEgg) &&
+      load("super/infinity_egg.rgb565", "rgb565", assets.infinityEgg) &&
+      load("super/bean.rgb565", "rgb565", assets.bean) &&
+      load("super/arrow_right.rgb565", "rgb565", assets.arrowRight) &&
+      load("super/arrow_left.rgb565", "rgb565", assets.arrowLeft) &&
+      load("super/arrow_up.rgb565", "rgb565", assets.arrowUp) &&
+      load("super/arrow_down.rgb565", "rgb565", assets.arrowDown) &&
+      load("super/grassy_arrow_right.rgb565", "rgb565", assets.grassyArrowRight) &&
+      load("super/grassy_arrow_left.rgb565", "rgb565", assets.grassyArrowLeft) &&
+      load("super/grassy_arrow_up.rgb565", "rgb565", assets.grassyArrowUp) &&
+      load("super/grassy_arrow_down.rgb565", "rgb565", assets.grassyArrowDown) &&
+      load("super/sky.rle", "rle332", assets.sky);
+  if (!ok) assets.release();
+  return ok;
+}
+
+namespace {
+void setArt(const GameAssetImage& image, const uint16_t*& pixels,
+            uint16_t& width, uint16_t& height) {
+  pixels = image.data == nullptr ? nullptr : image.pixels();
+  width = image.width;
+  height = image.height;
+}
+}  // namespace
+
+const uint16_t* sfbBird = nullptr;
+uint16_t sfbBirdWidth = 0;
+uint16_t sfbBirdHeight = 0;
+const uint16_t* sfbWalk0 = nullptr;
+uint16_t sfbWalk0Width = 0;
+uint16_t sfbWalk0Height = 0;
+const uint16_t* sfbWalk1 = nullptr;
+uint16_t sfbWalk1Width = 0;
+uint16_t sfbWalk1Height = 0;
+const uint16_t* sfbWalk2 = nullptr;
+uint16_t sfbWalk2Width = 0;
+uint16_t sfbWalk2Height = 0;
+const uint16_t* sfbWalk3 = nullptr;
+uint16_t sfbWalk3Width = 0;
+uint16_t sfbWalk3Height = 0;
+const uint16_t* sfbWalk4 = nullptr;
+uint16_t sfbWalk4Width = 0;
+uint16_t sfbWalk4Height = 0;
+const uint16_t* sfbWalk5 = nullptr;
+uint16_t sfbWalk5Width = 0;
+uint16_t sfbWalk5Height = 0;
+const uint16_t* sfbWalk6 = nullptr;
+uint16_t sfbWalk6Width = 0;
+uint16_t sfbWalk6Height = 0;
+const uint16_t* sfbWalk7 = nullptr;
+uint16_t sfbWalk7Width = 0;
+uint16_t sfbWalk7Height = 0;
+const uint16_t* sfbDuck = nullptr;
+uint16_t sfbDuckWidth = 0;
+uint16_t sfbDuckHeight = 0;
+const uint16_t* sfbDive = nullptr;
+uint16_t sfbDiveWidth = 0;
+uint16_t sfbDiveHeight = 0;
+const uint16_t* sfbGorilla = nullptr;
+uint16_t sfbGorillaWidth = 0;
+uint16_t sfbGorillaHeight = 0;
+const uint16_t* sfbRedGorilla = nullptr;
+uint16_t sfbRedGorillaWidth = 0;
+uint16_t sfbRedGorillaHeight = 0;
+const uint16_t* sfbDirt = nullptr;
+uint16_t sfbDirtWidth = 0;
+uint16_t sfbDirtHeight = 0;
+const uint16_t* sfbDirtShadow = nullptr;
+uint16_t sfbDirtShadowWidth = 0;
+uint16_t sfbDirtShadowHeight = 0;
+const uint16_t* sfbGrass = nullptr;
+uint16_t sfbGrassWidth = 0;
+uint16_t sfbGrassHeight = 0;
+const uint16_t* sfbBox = nullptr;
+uint16_t sfbBoxWidth = 0;
+uint16_t sfbBoxHeight = 0;
+const uint16_t* sfbMystery = nullptr;
+uint16_t sfbMysteryWidth = 0;
+uint16_t sfbMysteryHeight = 0;
+const uint16_t* sfbMysteryOff = nullptr;
+uint16_t sfbMysteryOffWidth = 0;
+uint16_t sfbMysteryOffHeight = 0;
+const uint16_t* sfbEgg = nullptr;
+uint16_t sfbEggWidth = 0;
+uint16_t sfbEggHeight = 0;
+const uint16_t* sfbBlueEgg = nullptr;
+uint16_t sfbBlueEggWidth = 0;
+uint16_t sfbBlueEggHeight = 0;
+const uint16_t* sfbGreenEgg = nullptr;
+uint16_t sfbGreenEggWidth = 0;
+uint16_t sfbGreenEggHeight = 0;
+const uint16_t* sfbRat = nullptr;
+uint16_t sfbRatWidth = 0;
+uint16_t sfbRatHeight = 0;
+const uint16_t* sfbFox = nullptr;
+uint16_t sfbFoxWidth = 0;
+uint16_t sfbFoxHeight = 0;
+const uint16_t* sfbNest = nullptr;
+uint16_t sfbNestWidth = 0;
+uint16_t sfbNestHeight = 0;
+const uint16_t* sfbEggCracking = nullptr;
+uint16_t sfbEggCrackingWidth = 0;
+uint16_t sfbEggCrackingHeight = 0;
+const uint16_t* sfbEggOpen = nullptr;
+uint16_t sfbEggOpenWidth = 0;
+uint16_t sfbEggOpenHeight = 0;
+const uint16_t* sfbGoldEgg = nullptr;
+uint16_t sfbGoldEggWidth = 0;
+uint16_t sfbGoldEggHeight = 0;
+const uint16_t* sfbInfinityEgg = nullptr;
+uint16_t sfbInfinityEggWidth = 0;
+uint16_t sfbInfinityEggHeight = 0;
+const uint16_t* sfbBean = nullptr;
+uint16_t sfbBeanWidth = 0;
+uint16_t sfbBeanHeight = 0;
+const uint16_t* sfbArrowRight = nullptr;
+uint16_t sfbArrowRightWidth = 0;
+uint16_t sfbArrowRightHeight = 0;
+const uint16_t* sfbArrowLeft = nullptr;
+uint16_t sfbArrowLeftWidth = 0;
+uint16_t sfbArrowLeftHeight = 0;
+const uint16_t* sfbArrowUp = nullptr;
+uint16_t sfbArrowUpWidth = 0;
+uint16_t sfbArrowUpHeight = 0;
+const uint16_t* sfbArrowDown = nullptr;
+uint16_t sfbArrowDownWidth = 0;
+uint16_t sfbArrowDownHeight = 0;
+const uint16_t* sfbGrassyArrowRight = nullptr;
+uint16_t sfbGrassyArrowRightWidth = 0;
+uint16_t sfbGrassyArrowRightHeight = 0;
+const uint16_t* sfbGrassyArrowLeft = nullptr;
+uint16_t sfbGrassyArrowLeftWidth = 0;
+uint16_t sfbGrassyArrowLeftHeight = 0;
+const uint16_t* sfbGrassyArrowUp = nullptr;
+uint16_t sfbGrassyArrowUpWidth = 0;
+uint16_t sfbGrassyArrowUpHeight = 0;
+const uint16_t* sfbGrassyArrowDown = nullptr;
+uint16_t sfbGrassyArrowDownWidth = 0;
+uint16_t sfbGrassyArrowDownHeight = 0;
+const uint16_t* sfbSkyRows = nullptr;
+const uint8_t* sfbSkyRuns = nullptr;
+
+void bindSuperFlashyArt(const SuperFlashyAssets& assets) {
+  setArt(assets.bird, sfbBird, sfbBirdWidth, sfbBirdHeight);
+  setArt(assets.walk[0], sfbWalk0, sfbWalk0Width, sfbWalk0Height);
+  setArt(assets.walk[1], sfbWalk1, sfbWalk1Width, sfbWalk1Height);
+  setArt(assets.walk[2], sfbWalk2, sfbWalk2Width, sfbWalk2Height);
+  setArt(assets.walk[3], sfbWalk3, sfbWalk3Width, sfbWalk3Height);
+  setArt(assets.walk[4], sfbWalk4, sfbWalk4Width, sfbWalk4Height);
+  setArt(assets.walk[5], sfbWalk5, sfbWalk5Width, sfbWalk5Height);
+  setArt(assets.walk[6], sfbWalk6, sfbWalk6Width, sfbWalk6Height);
+  setArt(assets.walk[7], sfbWalk7, sfbWalk7Width, sfbWalk7Height);
+  setArt(assets.duck, sfbDuck, sfbDuckWidth, sfbDuckHeight);
+  setArt(assets.dive, sfbDive, sfbDiveWidth, sfbDiveHeight);
+  setArt(assets.gorilla, sfbGorilla, sfbGorillaWidth, sfbGorillaHeight);
+  setArt(assets.redGorilla, sfbRedGorilla, sfbRedGorillaWidth,
+         sfbRedGorillaHeight);
+  setArt(assets.dirt, sfbDirt, sfbDirtWidth, sfbDirtHeight);
+  setArt(assets.dirtShadow, sfbDirtShadow, sfbDirtShadowWidth,
+         sfbDirtShadowHeight);
+  setArt(assets.grass, sfbGrass, sfbGrassWidth, sfbGrassHeight);
+  setArt(assets.box, sfbBox, sfbBoxWidth, sfbBoxHeight);
+  setArt(assets.mystery, sfbMystery, sfbMysteryWidth, sfbMysteryHeight);
+  setArt(assets.mysteryOff, sfbMysteryOff, sfbMysteryOffWidth,
+         sfbMysteryOffHeight);
+  setArt(assets.egg, sfbEgg, sfbEggWidth, sfbEggHeight);
+  setArt(assets.blueEgg, sfbBlueEgg, sfbBlueEggWidth, sfbBlueEggHeight);
+  setArt(assets.greenEgg, sfbGreenEgg, sfbGreenEggWidth, sfbGreenEggHeight);
+  setArt(assets.rat, sfbRat, sfbRatWidth, sfbRatHeight);
+  setArt(assets.fox, sfbFox, sfbFoxWidth, sfbFoxHeight);
+  setArt(assets.nest, sfbNest, sfbNestWidth, sfbNestHeight);
+  setArt(assets.eggCracking, sfbEggCracking, sfbEggCrackingWidth,
+         sfbEggCrackingHeight);
+  setArt(assets.eggOpen, sfbEggOpen, sfbEggOpenWidth, sfbEggOpenHeight);
+  setArt(assets.goldEgg, sfbGoldEgg, sfbGoldEggWidth, sfbGoldEggHeight);
+  setArt(assets.infinityEgg, sfbInfinityEgg, sfbInfinityEggWidth,
+         sfbInfinityEggHeight);
+  setArt(assets.bean, sfbBean, sfbBeanWidth, sfbBeanHeight);
+  setArt(assets.arrowRight, sfbArrowRight, sfbArrowRightWidth,
+         sfbArrowRightHeight);
+  setArt(assets.arrowLeft, sfbArrowLeft, sfbArrowLeftWidth, sfbArrowLeftHeight);
+  setArt(assets.arrowUp, sfbArrowUp, sfbArrowUpWidth, sfbArrowUpHeight);
+  setArt(assets.arrowDown, sfbArrowDown, sfbArrowDownWidth, sfbArrowDownHeight);
+  setArt(assets.grassyArrowRight, sfbGrassyArrowRight, sfbGrassyArrowRightWidth,
+         sfbGrassyArrowRightHeight);
+  setArt(assets.grassyArrowLeft, sfbGrassyArrowLeft, sfbGrassyArrowLeftWidth,
+         sfbGrassyArrowLeftHeight);
+  setArt(assets.grassyArrowUp, sfbGrassyArrowUp, sfbGrassyArrowUpWidth,
+         sfbGrassyArrowUpHeight);
+  setArt(assets.grassyArrowDown, sfbGrassyArrowDown, sfbGrassyArrowDownWidth,
+         sfbGrassyArrowDownHeight);
+  sfbSkyRows = nullptr;
+  sfbSkyRuns = nullptr;
+  if (assets.sky.data != nullptr && assets.sky.size >= 6 + sfbSkyHeight * 2) {
+    const uint16_t width = assets.sky.data[0] | (assets.sky.data[1] << 8);
+    const uint16_t height = assets.sky.data[2] | (assets.sky.data[3] << 8);
+    if (width == sfbSkyWidth && height == sfbSkyHeight) {
+      sfbSkyRows = reinterpret_cast<const uint16_t*>(assets.sky.data + 6);
+      sfbSkyRuns = assets.sky.data + 6 + height * 2;
+    }
+  }
+}
+
+bool loadSuperFlashyMenuArt(SuperFlashyAssets& assets) {
+  assets.release();
+  static ManifestEntry entries[MAX_MANIFEST_ENTRIES];
+  size_t count = 0;
+  if (!loadManifestEntries(entries, count)) return false;
+  const auto load = [&](const char* path, const char* format,
+                        GameAssetImage& image) {
+    return loadOneImage(path, format, 0, 0, image, entries, count);
+  };
+  const bool ok = load("super/sky.rle", "rle332", assets.sky) &&
+                  load("super/grass.rgb565", "rgb565", assets.grass) &&
+                  load("super/bird.rgb565", "rgb565", assets.bird) &&
+                  load("super/walk0.rgb565", "rgb565", assets.walk[0]) &&
+                  load("super/mystery.rgb565", "rgb565", assets.mystery) &&
+                  load("super/box.rgb565", "rgb565", assets.box) &&
+                  load("super/gold_egg.rgb565", "rgb565", assets.goldEgg) &&
+                  load("super/red_gorilla.rgb565", "rgb565", assets.redGorilla);
   if (!ok) assets.release();
   return ok;
 }

@@ -39,16 +39,23 @@ def cover_resize(image: Image.Image, width: int, height: int) -> Image.Image:
     return resized.crop((left, top, left + width, top + height))
 
 
-def convert_rgb565(path: Path, shade: float = 1.0) -> tuple[int, int, bytes]:
-    image = Image.open(path).convert("RGBA")
+def dirt_shadow(y: int) -> float:
+    return 0.55 if y < 5 else (0.75 if y < 9 else 1.0)
+
+
+def convert_rgb565(path: Path, shade: float = 1.0, angle: int = 0,
+                   row_shade=None) -> tuple[int, int, bytes]:
+    image = Image.open(path).convert("RGBA").rotate(angle, expand=True)
     pixels = bytearray()
     for y in range(image.height):
+        scale = row_shade(y) if row_shade is not None else shade
         for x in range(image.width):
             r, g, b, alpha = image.getpixel((x, y))
+            r, g, b = int(r * scale), int(g * scale), int(b * scale)
             if alpha < 128:
                 color = TRANSPARENT
             else:
-                color = rgb565(int(r * shade), int(g * shade), int(b * shade))
+                color = rgb565(r, g, b)
                 # A visible pixel must never become the transparency key.
                 if color == TRANSPARENT:
                     color ^= 1
@@ -155,7 +162,69 @@ ASSETS: list[tuple[str, Path, str, float]] = [
      "rgb565", 1.0),
     ("super/egg_open.rgb565", SUPER_ART / "CrackedOpenEgg.png",
      "rgb565", 1.0),
+    ("super/dive.rgb565", SUPER_ART / "FlashyBirdDive.png", "rgb565", 1.0),
+    ("super/dirt_shadow.rgb565", SUPER_ART / "DirtTile.png", "rgb565", 1.0),
+    ("super/green_egg.rgb565", SUPER_ART / "GreenEgg.png", "rgb565", 1.0),
+    ("super/gold_egg.rgb565", SUPER_ART / "GoldenEgg.png", "rgb565", 1.0),
+    ("super/infinity_egg.rgb565", SUPER_ART / "InfinityEgg.png",
+     "rgb565", 1.0),
+    ("super/bean.rgb565", SUPER_ART / "MagicBean.png", "rgb565", 1.0),
+    ("super/arrow_right.rgb565", SUPER_ART / "DirectionalBlock.png",
+     "rgb565", 1.0),
+    ("super/arrow_left.rgb565", SUPER_ART / "DirectionalBlock.png",
+     "rgb565", 1.0),
+    ("super/arrow_up.rgb565", SUPER_ART / "DirectionalBlock.png",
+     "rgb565", 1.0),
+    ("super/arrow_down.rgb565", SUPER_ART / "DirectionalBlock.png",
+     "rgb565", 1.0),
+    ("super/grassy_arrow_right.rgb565", SUPER_ART / "GrassyDirectionalBlock.png",
+     "rgb565", 1.0),
+    ("super/grassy_arrow_left.rgb565", SUPER_ART / "GrassyDirectionalBlock.png",
+     "rgb565", 1.0),
+    ("super/grassy_arrow_up.rgb565", SUPER_ART / "GrassyDirectionalBlock.png",
+     "rgb565", 1.0),
+    ("super/grassy_arrow_down.rgb565", SUPER_ART / "GrassyDirectionalBlock.png",
+     "rgb565", 1.0),
 ]
+
+# Same rotations the firmware sprites use: the source art points right.
+ROTATE = {
+    "super/arrow_left.rgb565": 180,
+    "super/arrow_up.rgb565": 90,
+    "super/arrow_down.rgb565": 270,
+    "super/grassy_arrow_left.rgb565": 180,
+    "super/grassy_arrow_up.rgb565": 90,
+    "super/grassy_arrow_down.rgb565": 270,
+}
+
+
+def sky_rle() -> tuple[int, int, bytes]:
+    """RGB332 sky, run-length encoded the way the game unpacks it."""
+    image = Image.open(SUPER_ART / "Sky.png").convert("RGB")
+    if image.size != (SCREEN_WIDTH, SCREEN_HEIGHT):
+        raise ValueError("Sky.png must be 320x240")
+    pixels = []
+    for y in range(image.height):
+        for x in range(image.width):
+            r, g, b = image.getpixel((x, y))
+            pixels.append((round(r * 7 / 255) << 5) | (round(g * 7 / 255) << 2)
+                          | round(b * 3 / 255))
+    runs = []
+    starts = []
+    for y in range(image.height):
+        starts.append(len(runs))
+        row = pixels[y * image.width:(y + 1) * image.width]
+        x = 0
+        while x < len(row):
+            n = 1
+            while x + n < len(row) and n < 255 and row[x + n] == row[x]:
+                n += 1
+            runs += [n, row[x]]
+            x += n
+    payload = struct.pack("<HHH", image.width, image.height, len(runs))
+    payload += struct.pack("<" + "H" * len(starts), *starts)
+    payload += bytes(runs)
+    return image.width, image.height, payload
 
 
 def main() -> None:
@@ -166,24 +235,15 @@ def main() -> None:
         "manifest_version|1",
     ]
     total = 0
-
-    # The super/ files are left exactly as they are. Super Flashy Birds now
-    # builds its pictures into the firmware, and devices still running older
-    # firmware reject files whose sizes have changed.
-    previous = {}
-    if (OUT / "manifest.txt").exists():
-        for line in (OUT / "manifest.txt").read_text(encoding="utf-8").splitlines():
-            previous[line.split("|")[0]] = line
+    written = set()
 
     for relative, source, format_name, shade in ASSETS:
-        if relative.startswith("super/") and relative in previous:
-            manifest.append(previous[relative])
-            total += (OUT / relative).stat().st_size
-            continue
+        angle = ROTATE.get(relative, 0)
+        row_shade = dirt_shadow if relative == "super/dirt_shadow.rgb565" else None
         if format_name == "rgb332":
             width, height, data = convert_background(source)
         else:
-            width, height, data = convert_rgb565(source, shade)
+            width, height, data = convert_rgb565(source, shade, angle, row_shade)
         output = OUT / relative
         output.parent.mkdir(parents=True, exist_ok=True)
         output.write_bytes(data)
@@ -191,8 +251,38 @@ def main() -> None:
         manifest.append(
             f"{relative}|{width}|{height}|{format_name}|{len(data)}|{digest}"
         )
+        written.add(relative)
         total += len(data)
         print(f"{relative}: {width}x{height}, {len(data)} bytes")
+
+    sky_w, sky_h, sky = sky_rle()
+    sky_path = OUT / "super" / "sky.rle"
+    sky_path.write_bytes(sky)
+    sky_digest = hashlib.sha256(sky).hexdigest()
+    manifest.append(
+        f"super/sky.rle|{sky_w}|{sky_h}|rle332|{len(sky)}|{sky_digest}"
+    )
+    written.add("super/sky.rle")
+    total += len(sky)
+    print(f"super/sky.rle: {sky_w}x{sky_h}, {len(sky)} bytes")
+
+    # Keep assets this script does not generate, such as the desk logo.
+    if (OUT / "manifest.txt").exists():
+        for line in (OUT / "manifest.txt").read_text(encoding="utf-8").splitlines():
+            path = line.split("|")[0]
+            if "|" in line and path not in written and not path.startswith("#") \
+                    and path != "manifest_version":
+                manifest.append(line)
+                print(f"kept {path}")
+
+    logo = OUT / "desk" / "spotify_logo.rgb565"
+    if logo.exists() and "desk/spotify_logo.rgb565" not in written:
+        logo_bytes = logo.read_bytes()
+        manifest.append(
+            "desk/spotify_logo.rgb565|64|64|rgb565|"
+            f"{len(logo_bytes)}|{hashlib.sha256(logo_bytes).hexdigest()}"
+        )
+        total += len(logo_bytes)
 
     (OUT / "manifest.txt").write_text("\n".join(manifest) + "\n",
                                       encoding="utf-8")

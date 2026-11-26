@@ -38,20 +38,35 @@ struct SuperFlashyAssets {
   GameAssetImage bird;
   GameAssetImage walk[8];
   GameAssetImage duck;
+  GameAssetImage dive;
   GameAssetImage gorilla;
   GameAssetImage redGorilla;
   GameAssetImage dirt;
+  GameAssetImage dirtShadow;
   GameAssetImage grass;
   GameAssetImage box;
   GameAssetImage mystery;
   GameAssetImage mysteryOff;
   GameAssetImage egg;
   GameAssetImage blueEgg;
+  GameAssetImage greenEgg;
   GameAssetImage rat;
   GameAssetImage fox;
   GameAssetImage nest;
   GameAssetImage eggCracking;
   GameAssetImage eggOpen;
+  GameAssetImage goldEgg;
+  GameAssetImage infinityEgg;
+  GameAssetImage bean;
+  GameAssetImage arrowRight;
+  GameAssetImage arrowLeft;
+  GameAssetImage arrowUp;
+  GameAssetImage arrowDown;
+  GameAssetImage grassyArrowRight;
+  GameAssetImage grassyArrowLeft;
+  GameAssetImage grassyArrowUp;
+  GameAssetImage grassyArrowDown;
+  GameAssetImage sky;
 
   void release();
 };
@@ -88,6 +103,10 @@ bool loadFlappyAssets(FlappyAssets& assets, bool night = false);
 // Swap only the background of loaded assets, reusing its memory.
 bool switchFlappyBackground(FlappyAssets& assets, bool night);
 bool loadSuperFlashyAssets(SuperFlashyAssets& assets);
+// Sky plus the few sprites the game-menu tiles draw.
+bool loadSuperFlashyMenuArt(SuperFlashyAssets& assets);
+// Point the game sprite names at a loaded set. Empty images become null.
+void bindSuperFlashyArt(const SuperFlashyAssets& assets);
 bool loadDeskSpotifyLogo(GameAssetImage& logo);
 
 // Let other modules (e.g. the battery log) share the LittleFS cache safely.

@@ -666,6 +666,7 @@ void runDeskMode(TFT_eSPI& display) {
   loadDeskSpotifyLogo(spotifyLogo);
 
   int8_t lastBatteryPercent = batteryPercent();
+  uint16_t lastBatteryMilliVolts = batteryMilliVolts();
 
   DeskData data;
   initDeskClock();
@@ -755,8 +756,11 @@ void runDeskMode(TFT_eSPI& display) {
 
     // The battery task measures once a minute; redraw only when it changes.
     const int8_t currentBatteryPercent = batteryPercent();
-    if (currentBatteryPercent != lastBatteryPercent) {
+    const uint16_t currentBatteryMilliVolts = batteryMilliVolts();
+    if (currentBatteryPercent != lastBatteryPercent ||
+        currentBatteryMilliVolts != lastBatteryMilliVolts) {
       lastBatteryPercent = currentBatteryPercent;
+      lastBatteryMilliVolts = currentBatteryMilliVolts;
       if (page == 0) pageDirty = true;
     }
 

@@ -16,7 +16,7 @@ constexpr uint32_t BATTERY_PERIOD_MS = 60UL * 1000UL;
 // Close to empty the battery is checked more often so the cutoff is not
 // missed by a full minute.
 constexpr uint32_t BATTERY_LOW_PERIOD_MS = 10UL * 1000UL;
-constexpr uint16_t BATTERY_LOW_WATCH_MV = 3300;
+constexpr uint16_t BATTERY_LOW_WATCH_MV = 3500;
 constexpr uint8_t CUTOFF_CONFIRM_READINGS = 2;
 constexpr uint32_t CUTOFF_CONFIRM_GAP_MS = 1000;
 constexpr uint16_t BATTERY_MIN_VALID_MV = 2500;
@@ -39,8 +39,10 @@ void preparePin() {
   pinReady = true;
 }
 
+// The same 3.36 V line drives the 0% readout, the power-on check, and the
+// shutdown. Zero means no reading, so an unconnected battery never counts.
 bool underCutoff(uint32_t mv) {
-  return mv >= BATTERY_MIN_VALID_MV && mv < BATTERY_CUTOFF_MV;
+  return mv > 0 && mv <= BATTERY_CUTOFF_MV;
 }
 
 uint32_t readMilliVolts() {
@@ -59,43 +61,53 @@ int8_t percentFromMilliVolts(uint32_t mv) {
     uint8_t percent;
   };
   static const Point CURVE[] = {
-      {4200, 100}, {4150, 95}, {4110, 90}, {4080, 85}, {4020, 80},
-      {3980, 75},  {3950, 70}, {3910, 65}, {3870, 60}, {3850, 55},
-      {3840, 50},  {3820, 45}, {3800, 40}, {3790, 35}, {3770, 30},
-      {3750, 25},  {3730, 20}, {3710, 15}, {3690, 10}, {3610, 5},
-      {3300, 2},   {3000, 0},
+      {4200, 100}, {4150, 95}, {4100, 90}, {4050, 85}, {4000, 80},
+      {3950, 70},  {3900, 60}, {3850, 50}, {3800, 40}, {3750, 30},
+      {3700, 20},  {3650, 15}, {3600, 10}, {3500, 5},  {3400, 2},
+      {3360, 0},
   };
   constexpr size_t COUNT = sizeof(CURVE) / sizeof(CURVE[0]);
-  if (mv >= CURVE[0].mv) return 100;
+  // 3.36 V and below is 0%. A fraction of a percent just above that still
+  // shows 1%, so the gauge only reads 0% at the bottom of the curve.
   if (mv <= CURVE[COUNT - 1].mv) return 0;
+  if (mv >= CURVE[0].mv) return 100;
   for (size_t index = 1; index < COUNT; ++index) {
     if (mv >= CURVE[index].mv) {
       const uint32_t span = CURVE[index - 1].mv - CURVE[index].mv;
       const uint32_t rise = CURVE[index - 1].percent - CURVE[index].percent;
-      return static_cast<int8_t>(CURVE[index].percent +
-                                 ((mv - CURVE[index].mv) * rise) / span);
+      const int32_t value = CURVE[index].percent +
+                            static_cast<int32_t>(((mv - CURVE[index].mv) * rise) / span);
+      return static_cast<int8_t>(value < 1 ? 1 : value);
     }
   }
-  return 0;
+  return 1;
 }
 
-// Takes one reading, updates the smoothed value, and returns the raw reading.
-uint32_t sampleBattery() {
+// Takes one reading and folds it into the smoothed value.
+void sampleBattery() {
   const uint32_t mv = readMilliVolts();
-  if (mv < BATTERY_MIN_VALID_MV) return mv;
+  if (mv < BATTERY_MIN_VALID_MV) {
+    // Once a battery has been read, a sub-2.5 V reading means it has died
+    // (or was unplugged). Show 0% so the cutoff takes it. Before any reading
+    // it is just no battery.
+    if (smoothedMilliVolts != 0) {
+      smoothedMilliVolts = mv;
+      currentPercent = mv == 0 ? -1 : 0;
+    }
+    return;
+  }
   smoothedMilliVolts =
       smoothedMilliVolts == 0 ? mv : (smoothedMilliVolts * 3 + mv) / 4;
   currentPercent = percentFromMilliVolts(smoothedMilliVolts);
-  return mv;
 }
 
-// A single low reading can be a dip from Wi-Fi or audio. Only a few readings
-// in a row, all under the cutoff, count.
-bool cutoffConfirmed(uint32_t firstReading) {
-  if (!underCutoff(firstReading)) return false;
+// A single low reading can be a dip from Wi-Fi or audio. The smoothed value
+// has to stay under the cutoff across a few more readings a second apart.
+bool cutoffConfirmed() {
   for (uint8_t reading = 0; reading < CUTOFF_CONFIRM_READINGS; ++reading) {
     vTaskDelay(pdMS_TO_TICKS(CUTOFF_CONFIRM_GAP_MS));
-    if (!underCutoff(readMilliVolts())) return false;
+    sampleBattery();
+    if (!underCutoff(smoothedMilliVolts)) return false;
   }
   return true;
 }
@@ -122,9 +134,9 @@ void batteryTask(void*) {
     vTaskDelay(pdMS_TO_TICKS(nearEmpty ? BATTERY_LOW_PERIOD_MS
                                        : BATTERY_PERIOD_MS));
     if (batteryPaused) continue;
-    const uint32_t mv = sampleBattery();
+    sampleBattery();
     if (!cutoffShutdownStarted && cutoffHandler != nullptr &&
-        cutoffConfirmed(mv)) {
+        underCutoff(smoothedMilliVolts) && cutoffConfirmed()) {
       cutoffShutdownStarted = true;
       cutoffHandler();
     }
@@ -168,3 +180,7 @@ void batteryLogSessionEnd() {
 }
 
 int8_t batteryPercent() { return currentPercent; }
+
+uint16_t batteryMilliVolts() {
+  return static_cast<uint16_t>(smoothedMilliVolts);
+}

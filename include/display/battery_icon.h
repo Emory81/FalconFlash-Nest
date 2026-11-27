@@ -4,14 +4,19 @@
 
 #include <cstdio>
 
-// Same battery glyph the Desk Mode clock uses. percent < 0 draws nothing.
+#include "power/battery_monitor.h"
+
+// Same battery glyph the Desk Mode clock uses, with the percent and the
+// smoothed voltage beside it. percent < 0 draws nothing.
 inline void drawBatteryIndicator(TFT_eSPI& canvas, int8_t percent,
                                  uint16_t background) {
   const int16_t x = 12;
   const int16_t y = 9;
   const int16_t bodyW = 22;
   const int16_t bodyH = 11;
-  canvas.fillRect(x - 2, y - 3, 78, bodyH + 6, background);
+  // Ends at x = 99 so the menu's left scroll arrow (starts near x = 98) is
+  // never cleared.
+  canvas.fillRect(x - 2, y - 3, 90, bodyH + 6, background);
   if (percent < 0) {
     return;
   }
@@ -24,11 +29,17 @@ inline void drawBatteryIndicator(TFT_eSPI& canvas, int8_t percent,
   if (fillW > 0) {
     canvas.fillRect(x + 2, y + 2, fillW, bodyH - 4, color);
   }
-  char text[8];
-  snprintf(text, sizeof(text), "%d%%", percent);
+  const uint16_t millivolts = batteryMilliVolts();
+  char text[16];
+  if (millivolts > 0) {
+    snprintf(text, sizeof(text), "%d%% %u.%02uV", percent, millivolts / 1000,
+             (millivolts % 1000) / 10);
+  } else {
+    snprintf(text, sizeof(text), "%d%%", percent);
+  }
   canvas.setTextFont(1);
   canvas.setTextSize(1);
   canvas.setTextDatum(ML_DATUM);
   canvas.setTextColor(TFT_WHITE, background);
-  canvas.drawString(text, x + bodyW + 8, y + bodyH / 2);
+  canvas.drawString(text, x + bodyW + 6, y + bodyH / 2);
 }

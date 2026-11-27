@@ -335,6 +335,7 @@ bool showGameMenu(TFT_eSPI& display, bool canGoBack, bool gamesOnly) {
   uint32_t pressedAt = 0;
   bool showingBar = false;
   int8_t shownBattery = batteryPercent();
+  uint16_t shownMilliVolts = batteryMilliVolts();
 
   // Move the highlight, redrawing everything only when the rows scroll.
   const auto moveTo = [&](uint8_t next) {
@@ -405,8 +406,11 @@ bool showGameMenu(TFT_eSPI& display, bool canGoBack, bool gamesOnly) {
       }
     }
     const int8_t percent = batteryPercent();
-    if (percent != shownBattery && !showingBar) {
+    const uint16_t millivolts = batteryMilliVolts();
+    if ((percent != shownBattery || millivolts != shownMilliVolts) &&
+        !showingBar) {
       shownBattery = percent;
+      shownMilliVolts = millivolts;
       drawBatteryIndicator(display, percent, MENU_BG);
     }
     delay(10);

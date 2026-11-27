@@ -24,16 +24,18 @@ constexpr int16_t TILE_GAP = 8;
 constexpr int16_t TILE_LEFT = 8;
 constexpr int16_t TILE_TOP = 36;
 
-// Three rows of three. The screen shows two rows and scrolls to the third.
+// Rows of three. The screen shows two rows and scrolls to the others.
 constexpr const char* GAME_NAMES[] = {
-    "Flappy Falcon", "Flashy Birds", "Gallery",
+    "Flappy Falcon", "Flashy Birds", "Flashy Golf",
     "Tic Tac Toe",   "Rock Paper",   "Runner",
-    "Brick Breaker", "Guitar Hero",  "Pong"};
+    "Brick Breaker", "Guitar Hero",  "Pong",
+    "Checkers",      "Chess",
+    "Gallery"};
 constexpr uint8_t GAME_COUNT = sizeof(GAME_NAMES) / sizeof(GAME_NAMES[0]);
 constexpr uint8_t VISIBLE_ROWS = 2;
 
 // BTN2 switches modes. Two-player mode lists only the games that have it.
-constexpr uint8_t TWO_PLAYER_GAMES[] = {3, 4, 8};
+constexpr uint8_t TWO_PLAYER_GAMES[] = {3, 4, 8, 9, 10};
 bool twoPlayer = false;
 
 uint8_t listedCount() {
@@ -87,8 +89,8 @@ void drawGameIcon(TFT_eSPI& display, uint8_t index, const FlappyAssets& assets,
     case 1:
       drawSuperFlashyBirdsIcon(display, x + 8, y);
       break;
-    case 2:  // its picture is 72 x 40: centered in the tile
-      drawGalleryIcon(display, x + 10, y + 7);
+    case 2:
+      drawFlashyGolfIcon(display, x, y);
       break;
     case 3:
       drawTicTacToeIcon(display, x, y);
@@ -107,6 +109,15 @@ void drawGameIcon(TFT_eSPI& display, uint8_t index, const FlappyAssets& assets,
       break;
     case 8:
       drawPongIcon(display, x, y);
+      break;
+    case 9:
+      drawCheckersIcon(display, x, y);
+      break;
+    case 10:
+      drawChessIcon(display, x, y);
+      break;
+    case 11:  // its picture is 72 x 40: centered in the tile
+      drawGalleryIcon(display, x + 10, y + 7);
       break;
     default:
       break;
@@ -287,7 +298,7 @@ void launchSelectedGame(TFT_eSPI& display, uint8_t selectedIndex) {
       runSuperFlashyBirds(display);
       break;
     case 2:
-      runGallery(display);
+      runFlashyGolf(display);
       break;
     case 3:
       runTicTacToe(display, twoPlayer);
@@ -306,6 +317,15 @@ void launchSelectedGame(TFT_eSPI& display, uint8_t selectedIndex) {
       break;
     case 8:
       runPong(display, twoPlayer);
+      break;
+    case 9:
+      runCheckers(display, twoPlayer);
+      break;
+    case 10:
+      runChess(display, twoPlayer);
+      break;
+    case 11:
+      runGallery(display);
       break;
   }
 }

@@ -267,6 +267,8 @@ void drawSmoke(TFT_eSPI& display, uint32_t now, int16_t bandTop = 0) {
 // Full-screen background, day or night. The images are RGB332, the same
 // layout as the 8-bit sprite's buffer, so the sprite path is a single memcpy.
 // Without a sprite the day image goes straight to the screen.
+constexpr uint16_t PLAIN_SKY = 0x5DFF;  // when the sky picture does not fit
+
 void drawBackground(TFT_eSPI& display, TFT_eSprite* sprite,
                     const FlappyAssets& assets) {
   // The image must match the screen exactly (re-run tools/generate_game_assets.py
@@ -278,6 +280,12 @@ void drawBackground(TFT_eSPI& display, TFT_eSprite* sprite,
     return;
   }
   const uint8_t* image = assets.background.data;
+  if (image == nullptr) {
+    TFT_eSPI& canvas = sprite != nullptr ? *sprite : display;
+    canvas.fillRect(0, 0, BACKGROUND_WIDTH, BACKGROUND_HEIGHT, PLAIN_SKY);
+    drawSmoke(canvas, millis());
+    return;
+  }
   if (sprite != nullptr) {
     memcpy(sprite->getPointer(), image, assets.background.size);
     drawSmoke(*sprite, millis());
@@ -536,7 +544,9 @@ void runFlappyBird(TFT_eSPI& display) {
   const bool night = random(NIGHT_ONE_IN) == 0;
   FlappyAssets assets;
   if (!loadFlappyAssets(assets, night)) {
-    return;
+    // The sky is one very large picture. Without room for it, play on a
+    // plain one rather than not at all.
+    if (!loadFlappyAssets(assets, night, false)) return;
   }
   // Keep the speaker enabled while the game runs so short effects are heard.
   audioBegin();
@@ -670,9 +680,13 @@ void runFlappyBird(TFT_eSPI& display) {
         const uint32_t frameTime = millis();
         for (int16_t bandTop = 0; bandTop < screenH;
              bandTop += FRAME_BAND_HEIGHT) {
-          memcpy(frameBand.getPointer(),
-                 assets.background.data + bandTop * screenW,
-                 screenW * FRAME_BAND_HEIGHT);
+          if (assets.background.data != nullptr) {
+            memcpy(frameBand.getPointer(),
+                   assets.background.data + bandTop * screenW,
+                   screenW * FRAME_BAND_HEIGHT);
+          } else {
+            frameBand.fillSprite(PLAIN_SKY);
+          }
           drawSmoke(frameBand, frameTime, bandTop);
           drawFrameInBand(frameBand, assets, bandTop, screenH, birdY,
                           birdVelocity, pipeSpeed, pipes, pipeCount, score,

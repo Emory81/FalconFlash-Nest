@@ -24,12 +24,15 @@ SYMBOLS = {
     " ": "air",
     "X": "ground (solid, drawn as grass)",
     "H": "dirt / background (not solid)",
+    "Y": "yellow grass (one-way, crouch to drop through)",
     "S": "player start",
     "N": "nest (goal)",
     "G": "gorilla",
     "g": "red gorilla",
     "O": "golden egg (collectible)",
     "I": "infinity egg (collectible, total not shown)",
+    "C": "coin (collectible)",
+    "c": "green egg (extra life)",
     "R": "direction block, passable moving right",
     "L": "direction block, passable moving left",
     "U": "direction block, passable moving up",
@@ -38,6 +41,9 @@ SYMBOLS = {
     "B": "box",
     "M": "mystery box",
     "m": "magic bean box",
+    "b": "coin brick",
+    "P": "cardboard box (carry and throw)",
+    "T": "tennis ball (carry and throw)",
     **{d: f"bean spot for sublevel {d}" for d in "0123456789"},
 }
 
@@ -98,6 +104,22 @@ def parse(path: Path):
     return main_level, warnings
 
 
+def is_dirt(cell, col, row, width, rows):
+    """Whether dirt is drawn in this cell: an H, or something inside a hill that
+    keeps the dirt behind it. cell(col, row) gives the symbol, row 0 at the
+    bottom. The level editor uses this too."""
+    ch = cell(col, row)
+    if ch == "H" or (ch in "OICc0123456789" and 0 < col < width - 1
+                     and cell(col - 1, row) == "H"
+                     and cell(col + 1, row) == "H"):
+        return True
+    sides = sum(0 <= c < width and 0 <= r < rows and cell(c, r) == "H"
+                for c, r in ((col - 1, row), (col + 1, row),
+                             (col, row - 1), (col, row + 1)))
+    # Coins and enemies need only two sides.
+    return (ch in "SOICc" and sides >= 3) or (ch in "CGgFPT" and sides >= 2)
+
+
 def parse_map(lines, is_sub):
     """One map: the main level or a sublevel."""
     lines = list(lines)
@@ -125,10 +147,10 @@ def parse_map(lines, is_sub):
     def cell(col, row):  # row 0 is the bottom row of the map
         return grid[rows - 1 - row][col]
 
-    solid, decor, arrows = [], [], []
+    solid, decor, arrows, yellow = [], [], [], []
     for col in range(width):
         a_masks = [0] * len(ARROWS)
-        s_mask = d_mask = 0
+        s_mask = d_mask = y_mask = 0
         for row in range(rows):
             ch = cell(col, row)
             if ch == "X":
@@ -136,19 +158,22 @@ def parse_map(lines, is_sub):
             elif ch in ARROWS:  # solid, apart from the one way through
                 s_mask |= 1 << row
                 a_masks[ARROWS.index(ch)] |= 1 << row
-            elif ch == "H" or (ch in "OI0123456789" and 0 < col < width - 1
-                               and cell(col - 1, row) == "H"
-                               and cell(col + 1, row) == "H"):
-                d_mask |= 1 << row  # an egg inside a hill keeps the dirt behind
+            elif ch == "Y":  # collides like an up block
+                s_mask |= 1 << row
+                a_masks[ARROWS.index("U")] |= 1 << row
+                y_mask |= 1 << row
+            elif is_dirt(cell, col, row, width, rows):
+                d_mask |= 1 << row  # keeps the dirt behind when inside a hill
         solid.append(s_mask)
         decor.append(d_mask)
         arrows.append(tuple(a_masks))
+        yellow.append(y_mask)
 
     def is_solid(col, row):
         return row >= 0 and (solid[col] >> row) & 1
 
     def holds(col, row):  # ground, or a brick or mystery box
-        return row >= 0 and (is_solid(col, row) or cell(col, row) in "BMm")
+        return row >= 0 and (is_solid(col, row) or cell(col, row) in "BMmb")
 
     def stand_row(what, col, row):
         """Row of the cell the thing ends up in: it drops onto the first
@@ -160,7 +185,7 @@ def parse_map(lines, is_sub):
         return row
 
     starts, nests, gorillas, foxes, boxes, golds = [], [], [], [], [], []
-    spots, infinities = [], []
+    spots, infinities, coins, greens, items = [], [], [], [], []
     for col in range(width):
         for row in range(rows):
             ch = cell(col, row)
@@ -177,8 +202,15 @@ def parse_map(lines, is_sub):
                 golds.append((col, row))  # stays where it is drawn
             elif ch == "I":
                 infinities.append((col, row))
-            elif ch in ("B", "M", "m"):
-                kind = {"B": 0, "M": 1, "m": 2}[ch]
+            elif ch == "C":
+                coins.append((col, row))
+            elif ch == "c":
+                greens.append((col, row))
+            elif ch in ("P", "T"):
+                items.append((col, stand_row("P/T (box or ball)", col, row),
+                              1 if ch == "T" else 0))
+            elif ch in ("B", "M", "m", "b"):
+                kind = {"B": 0, "M": 1, "m": 2, "b": 3}[ch]
                 boxes.append((col * TILE, row * TILE, kind))
             elif ch.isdigit():
                 # on the top line it marks the whole column (row -1)
@@ -209,15 +241,18 @@ def parse_map(lines, is_sub):
         "width": width, "rows": rows, "solid": solid, "decor": decor,
         "start": starts[0], "nests": nests, "gorillas": gorillas,
         "foxes": foxes, "boxes": boxes, "golds": golds, "arrows": arrows,
+        "yellow": yellow,
         "spots": spots, "infinities": infinities,
+        "coins": coins, "greens": greens, "items": items,
     }, warnings
 
 
-def grassy_masks(solid, arrows):
+def grassy_masks(solid, arrows, yellow):
     """Per column: the direction blocks touching grass, or touching another
     grassy direction block (sides, above and below)."""
     cells = {(col, row) for col, masks in enumerate(arrows)
-             for row in range(MAX_ROWS) if any((m >> row) & 1 for m in masks)}
+             for row in range(MAX_ROWS) if any((m >> row) & 1 for m in masks)
+             and not (yellow[col] >> row) & 1}  # yellow grass counts as grass
     grass = {(col, row) for col, mask in enumerate(solid)
              for row in range(MAX_ROWS) if (mask >> row) & 1} - cells
     grassy, frontier = set(), list(grass)
@@ -256,10 +291,14 @@ def emit_map(lines, p, lv):
     masks = ["{" + ", ".join(hexu(m) for m in a) + "}" for a in lv["arrows"]]
     lines.append(f"constexpr uint32_t {p}_ARROWS[][4] = {{\n{c_array(masks, per_line=4)}\n}};")
     lines.append(f"constexpr int16_t {p}_GOLDS[][2] = {{{pairs(lv['golds'] or [(0, 0)])}}};")
-    grassy = grassy_masks(lv["solid"], lv["arrows"])
+    grassy = grassy_masks(lv["solid"], lv["arrows"], lv["yellow"])
     lines.append(f"constexpr uint32_t {p}_GRASSY[] = {{\n{c_array(grassy, fmt=hexu)}\n}};")
     lines.append(f"constexpr int16_t {p}_SPOTS[][3] = {{{pairs(lv['spots'] or [(0, 0, 0)])}}};")
     lines.append(f"constexpr int16_t {p}_INFINITIES[][2] = {{{pairs(lv['infinities'] or [(0, 0)])}}};")
+    lines.append(f"constexpr int16_t {p}_COINS[][2] = {{{pairs(lv['coins'] or [(0, 0)])}}};")
+    lines.append(f"constexpr int16_t {p}_GREENS[][2] = {{{pairs(lv['greens'] or [(0, 0)])}}};")
+    lines.append(f"constexpr uint32_t {p}_YELLOW[] = {{\n{c_array(lv['yellow'], fmt=hexu)}\n}};")
+    lines.append(f"constexpr int16_t {p}_ITEMS[][3] = {{{pairs(lv['items'] or [(0, 0, 0)])}}};")
     lines.append("")
 
 
@@ -269,7 +308,9 @@ def initializer(p, lv, subs="nullptr, nullptr, 0"):
             f"{len(lv['foxes'])}, {p}_NESTS, {len(lv['nests'])}, "
             f"{lv['start'][0]}, {lv['start'][1]}, {p}_ARROWS, {p}_GOLDS, "
             f"{len(lv['golds'])}, {p}_GRASSY, {p}_SPOTS, {len(lv['spots'])}, "
-            f"{subs}, {p}_INFINITIES, {len(lv['infinities'])}}}")
+            f"{subs}, {p}_INFINITIES, {len(lv['infinities'])}, "
+            f"{p}_COINS, {len(lv['coins'])}, {p}_GREENS, {len(lv['greens'])}, "
+            f"{p}_YELLOW, {p}_ITEMS, {len(lv['items'])}}}")
 
 
 def emit(levels):
@@ -293,7 +334,8 @@ def emit(levels):
         "  const int16_t (*gorillas)[3];     // {column, row, red?}",
         "  uint8_t gorillaCount;",
         "  const int16_t (*boxes)[3];        // {x px, bottom px above the map bottom,",
-        "                                    //  0 brick / 1 mystery / 2 magic bean}",
+        "                                    //  0 brick / 1 mystery / 2 magic bean",
+        "                                    //  / 3 coin brick}",
         "  uint8_t boxCount;",
         "  const int16_t (*foxes)[2];        // {column, row}",
         "  uint8_t foxCount;",
@@ -312,6 +354,13 @@ def emit(levels):
         "  uint8_t subCount;",
         "  const int16_t (*infinities)[2];   // infinity eggs {column, row}",
         "  uint8_t infinityCount;",
+        "  const int16_t (*coins)[2];        // {column, row}",
+        "  uint16_t coinCount;",
+        "  const int16_t (*greens)[2];       // green eggs {column, row}",
+        "  uint8_t greenCount;",
+        "  const uint32_t* yellow;           // per column: yellow grass tiles",
+        "  const int16_t (*items)[3];        // {column, row, 0 box / 1 tennis ball}",
+        "  uint8_t itemCount;",
         "};",
         "",
         f"constexpr uint8_t LEVEL_MAX_GORILLAS = {most('gorillas')};",
@@ -321,6 +370,9 @@ def emit(levels):
         f"constexpr uint8_t LEVEL_MAX_NESTS = {most('nests')};",
         f"constexpr uint8_t LEVEL_MAX_GOLDS = {most('golds')};",
         f"constexpr uint8_t LEVEL_MAX_INFINITIES = {most('infinities')};",
+        f"constexpr uint16_t LEVEL_MAX_COINS = {most('coins')};",
+        f"constexpr uint8_t LEVEL_MAX_GREENS = {most('greens')};",
+        f"constexpr uint8_t LEVEL_MAX_ITEMS = {most('items')};",
         "",
     ]
     entries = []

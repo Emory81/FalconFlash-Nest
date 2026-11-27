@@ -14,6 +14,7 @@
 
 #include <cstdlib>
 #include <cstring>
+#include <memory>
 
 #include "device_config.h"
 #include "network/device_network.h"
@@ -38,6 +39,16 @@ struct ManifestEntry {
   uint16_t height;
   uint32_t size;
 };
+
+// A manifest's worth of entries is 7.5 KB. It is borrowed from the heap for
+// each use: a permanent copy per function left too little room for the games.
+using ManifestEntries = std::unique_ptr<ManifestEntry[], void (*)(void*)>;
+
+ManifestEntries makeEntries() {
+  return ManifestEntries(static_cast<ManifestEntry*>(calloc(
+                             MAX_MANIFEST_ENTRIES, sizeof(ManifestEntry))),
+                         &free);
+}
 
 bool filesystemReady = false;
 SemaphoreHandle_t filesystemMutex = nullptr;
@@ -454,7 +465,9 @@ bool writeManifestAndReplace(const String& manifest) {
 }
 
 bool manifestFilesComplete(const String& manifest) {
-  static ManifestEntry entries[MAX_MANIFEST_ENTRIES];
+  const ManifestEntries owned = makeEntries();
+  ManifestEntry* const entries = owned.get();
+  if (entries == nullptr) return false;
   const size_t count = parseManifest(manifest, entries, MAX_MANIFEST_ENTRIES);
   if (count == 0) return false;
   for (size_t index = 0; index < count; ++index) {
@@ -467,7 +480,9 @@ bool synchronizeAssets(TFT_eSPI* display) {
   String remoteManifest;
   if (!fetchManifest(remoteManifest)) return false;
 
-  static ManifestEntry entries[MAX_MANIFEST_ENTRIES];
+  const ManifestEntries owned = makeEntries();
+  ManifestEntry* const entries = owned.get();
+  if (entries == nullptr) return false;
   const size_t count =
       parseManifest(remoteManifest, entries, MAX_MANIFEST_ENTRIES);
   if (count == 0) return false;
@@ -800,7 +815,9 @@ bool ensureGameAssets(TFT_eSPI& display) {
 bool loadGameAssetImage(const char* path, const char* format,
                         GameAssetImage& image) {
   if (!initGameAssets()) return false;
-  static ManifestEntry entries[MAX_MANIFEST_ENTRIES];
+  const ManifestEntries owned = makeEntries();
+  ManifestEntry* const entries = owned.get();
+  if (entries == nullptr) return false;
   size_t count = 0;
   if (!loadManifestEntries(entries, count)) return false;
   return loadOneImage(path, format, 0, 0, image, entries, count);
@@ -808,7 +825,9 @@ bool loadGameAssetImage(const char* path, const char* format,
 
 bool loadFlappyAssets(FlappyAssets& assets, bool night, bool withBackground) {
   assets.release();
-  static ManifestEntry entries[MAX_MANIFEST_ENTRIES];
+  const ManifestEntries owned = makeEntries();
+  ManifestEntry* const entries = owned.get();
+  if (entries == nullptr) return false;
   size_t count = 0;
   if (!loadManifestEntries(entries, count)) return false;
 
@@ -839,7 +858,9 @@ bool loadFlappyAssets(FlappyAssets& assets, bool night, bool withBackground) {
 
 bool loadSuperFlashyAssets(SuperFlashyAssets& assets, bool withSky) {
   assets.release();
-  static ManifestEntry entries[MAX_MANIFEST_ENTRIES];
+  const ManifestEntries owned = makeEntries();
+  ManifestEntry* const entries = owned.get();
+  if (entries == nullptr) return false;
   size_t count = 0;
   if (!loadManifestEntries(entries, count)) return false;
 
@@ -1082,7 +1103,9 @@ void bindSuperFlashyArt(const SuperFlashyAssets& assets) {
 
 bool loadSuperFlashyMenuArt(SuperFlashyAssets& assets) {
   assets.release();
-  static ManifestEntry entries[MAX_MANIFEST_ENTRIES];
+  const ManifestEntries owned = makeEntries();
+  ManifestEntry* const entries = owned.get();
+  if (entries == nullptr) return false;
   size_t count = 0;
   if (!loadManifestEntries(entries, count)) return false;
   const auto load = [&](const char* path, const char* format,
@@ -1107,7 +1130,9 @@ bool loadSuperFlashyMenuArt(SuperFlashyAssets& assets) {
 }
 
 bool switchFlappyBackground(FlappyAssets& assets, bool night) {
-  static ManifestEntry entries[MAX_MANIFEST_ENTRIES];
+  const ManifestEntries owned = makeEntries();
+  ManifestEntry* const entries = owned.get();
+  if (entries == nullptr) return false;
   size_t count = 0;
   if (!loadManifestEntries(entries, count)) return false;
   return loadOneImage(night ? "flappy/background_night.rgb332"
@@ -1117,7 +1142,9 @@ bool switchFlappyBackground(FlappyAssets& assets, bool night) {
 
 bool loadDeskSpotifyLogo(GameAssetImage& logo) {
   logo.release();
-  static ManifestEntry entries[MAX_MANIFEST_ENTRIES];
+  const ManifestEntries owned = makeEntries();
+  ManifestEntry* const entries = owned.get();
+  if (entries == nullptr) return false;
   size_t count = 0;
   if (!loadManifestEntries(entries, count)) return false;
   return loadOneImage("desk/spotify_logo.rgb565", "rgb565", 64, 64, logo,

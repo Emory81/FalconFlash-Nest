@@ -66,6 +66,18 @@ struct SuperFlashyAssets {
   GameAssetImage grassyArrowLeft;
   GameAssetImage grassyArrowUp;
   GameAssetImage grassyArrowDown;
+  GameAssetImage cloud;
+  GameAssetImage coin;
+  GameAssetImage yellowGrass;
+  GameAssetImage cloudBackground;
+  GameAssetImage cardboardBox;
+  GameAssetImage tennisBall;
+  GameAssetImage whiteArrowRight;
+  GameAssetImage whiteArrowLeft;
+  GameAssetImage whiteArrowUp;
+  GameAssetImage whiteArrowDown;
+  GameAssetImage golfEggUp;
+  GameAssetImage golfEggDown;
   GameAssetImage sky;
 
   void release();

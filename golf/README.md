@@ -24,4 +24,4 @@ rest, and the flaps still count.
 The ball is `include/art/Flashy Golf/GolfEggUp.png`, switching to
 `GolfEggDown.png` for a moment on each flap. Both are 20 x 16 with the egg in the middle 14 pixels (only the egg
 hits things, not the wings); after changing
-one, run `python tools/convert_builtin_sprites.py`.
+one, run `python tools/generate_game_assets.py`.

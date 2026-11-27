@@ -26,7 +26,7 @@ constexpr char CACHE_ROOT[] = "/game_assets";
 constexpr char MANIFEST_PATH[] = "/game_assets/manifest.txt";
 constexpr char MANIFEST_PART_PATH[] = "/game_assets/manifest.txt.part";
 constexpr char MANIFEST_BACKUP_PATH[] = "/game_assets/manifest.txt.bak";
-constexpr uint8_t MAX_MANIFEST_ENTRIES = 52;
+constexpr uint8_t MAX_MANIFEST_ENTRIES = 72;
 constexpr uint16_t HASH_HEX_LENGTH = 64;
 constexpr uint32_t HTTP_TIMEOUT_MS = 12000;
 constexpr uint32_t RETRY_DELAY_MS = 1000;
@@ -40,8 +40,8 @@ struct ManifestEntry {
   uint32_t size;
 };
 
-// A manifest's worth of entries is 7.5 KB. It is borrowed from the heap for
-// each use: a permanent copy per function left too little room for the games.
+// One manifest is about 11 KB. It is borrowed from the heap for each use: a
+// permanent copy per function left too little room for the games.
 using ManifestEntries = std::unique_ptr<ManifestEntry[], void (*)(void*)>;
 
 ManifestEntries makeEntries() {
@@ -669,6 +669,18 @@ void SuperFlashyAssets::release() {
   grassyArrowLeft.release();
   grassyArrowUp.release();
   grassyArrowDown.release();
+  cloud.release();
+  coin.release();
+  yellowGrass.release();
+  cloudBackground.release();
+  cardboardBox.release();
+  tennisBall.release();
+  whiteArrowRight.release();
+  whiteArrowLeft.release();
+  whiteArrowUp.release();
+  whiteArrowDown.release();
+  golfEggUp.release();
+  golfEggDown.release();
   sky.release();
 }
 
@@ -906,7 +918,19 @@ bool loadSuperFlashyAssets(SuperFlashyAssets& assets, bool withSky) {
       load("super/grassy_arrow_right.rgb565", "rgb565", assets.grassyArrowRight) &&
       load("super/grassy_arrow_left.rgb565", "rgb565", assets.grassyArrowLeft) &&
       load("super/grassy_arrow_up.rgb565", "rgb565", assets.grassyArrowUp) &&
-      load("super/grassy_arrow_down.rgb565", "rgb565", assets.grassyArrowDown);
+      load("super/grassy_arrow_down.rgb565", "rgb565", assets.grassyArrowDown) &&
+      load("super/cloud.rgb565", "rgb565", assets.cloud) &&
+      load("super/coin.rgb565", "rgb565", assets.coin) &&
+      load("super/yellow_grass.rgb565", "rgb565", assets.yellowGrass) &&
+      load("super/cloud_background.rgb565", "rgb565", assets.cloudBackground) &&
+      load("super/cardboard_box.rgb565", "rgb565", assets.cardboardBox) &&
+      load("super/tennis_ball.rgb565", "rgb565", assets.tennisBall) &&
+      load("super/white_arrow_right.rgb565", "rgb565", assets.whiteArrowRight) &&
+      load("super/white_arrow_left.rgb565", "rgb565", assets.whiteArrowLeft) &&
+      load("super/white_arrow_up.rgb565", "rgb565", assets.whiteArrowUp) &&
+      load("super/white_arrow_down.rgb565", "rgb565", assets.whiteArrowDown) &&
+      load("golf/egg_up.rgb565", "rgb565", assets.golfEggUp) &&
+      load("golf/egg_down.rgb565", "rgb565", assets.golfEggDown);
   if (ok && withSky) {
     ok = load("super/sky.rle", "rle332", assets.sky);
   }
@@ -1037,6 +1061,42 @@ uint16_t sfbGrassyArrowUpHeight = 0;
 const uint16_t* sfbGrassyArrowDown = nullptr;
 uint16_t sfbGrassyArrowDownWidth = 0;
 uint16_t sfbGrassyArrowDownHeight = 0;
+const uint16_t* sfbCloud = nullptr;
+uint16_t sfbCloudWidth = 0;
+uint16_t sfbCloudHeight = 0;
+const uint16_t* sfbCoin = nullptr;
+uint16_t sfbCoinWidth = 0;
+uint16_t sfbCoinHeight = 0;
+const uint16_t* sfbYellowGrass = nullptr;
+uint16_t sfbYellowGrassWidth = 0;
+uint16_t sfbYellowGrassHeight = 0;
+const uint16_t* sfbCloudBackground = nullptr;
+uint16_t sfbCloudBackgroundWidth = 0;
+uint16_t sfbCloudBackgroundHeight = 0;
+const uint16_t* sfbCardboardBox = nullptr;
+uint16_t sfbCardboardBoxWidth = 0;
+uint16_t sfbCardboardBoxHeight = 0;
+const uint16_t* sfbTennisBall = nullptr;
+uint16_t sfbTennisBallWidth = 0;
+uint16_t sfbTennisBallHeight = 0;
+const uint16_t* sfbWhiteArrowRight = nullptr;
+uint16_t sfbWhiteArrowRightWidth = 0;
+uint16_t sfbWhiteArrowRightHeight = 0;
+const uint16_t* sfbWhiteArrowLeft = nullptr;
+uint16_t sfbWhiteArrowLeftWidth = 0;
+uint16_t sfbWhiteArrowLeftHeight = 0;
+const uint16_t* sfbWhiteArrowUp = nullptr;
+uint16_t sfbWhiteArrowUpWidth = 0;
+uint16_t sfbWhiteArrowUpHeight = 0;
+const uint16_t* sfbWhiteArrowDown = nullptr;
+uint16_t sfbWhiteArrowDownWidth = 0;
+uint16_t sfbWhiteArrowDownHeight = 0;
+const uint16_t* golfEggUp = nullptr;
+uint16_t golfEggUpWidth = 0;
+uint16_t golfEggUpHeight = 0;
+const uint16_t* golfEggDown = nullptr;
+uint16_t golfEggDownWidth = 0;
+uint16_t golfEggDownHeight = 0;
 const uint16_t* sfbSkyRows = nullptr;
 const uint8_t* sfbSkyRuns = nullptr;
 
@@ -1089,6 +1149,26 @@ void bindSuperFlashyArt(const SuperFlashyAssets& assets) {
          sfbGrassyArrowUpHeight);
   setArt(assets.grassyArrowDown, sfbGrassyArrowDown, sfbGrassyArrowDownWidth,
          sfbGrassyArrowDownHeight);
+  setArt(assets.cloud, sfbCloud, sfbCloudWidth, sfbCloudHeight);
+  setArt(assets.coin, sfbCoin, sfbCoinWidth, sfbCoinHeight);
+  setArt(assets.yellowGrass, sfbYellowGrass, sfbYellowGrassWidth,
+         sfbYellowGrassHeight);
+  setArt(assets.cloudBackground, sfbCloudBackground, sfbCloudBackgroundWidth,
+         sfbCloudBackgroundHeight);
+  setArt(assets.cardboardBox, sfbCardboardBox, sfbCardboardBoxWidth,
+         sfbCardboardBoxHeight);
+  setArt(assets.tennisBall, sfbTennisBall, sfbTennisBallWidth,
+         sfbTennisBallHeight);
+  setArt(assets.whiteArrowRight, sfbWhiteArrowRight, sfbWhiteArrowRightWidth,
+         sfbWhiteArrowRightHeight);
+  setArt(assets.whiteArrowLeft, sfbWhiteArrowLeft, sfbWhiteArrowLeftWidth,
+         sfbWhiteArrowLeftHeight);
+  setArt(assets.whiteArrowUp, sfbWhiteArrowUp, sfbWhiteArrowUpWidth,
+         sfbWhiteArrowUpHeight);
+  setArt(assets.whiteArrowDown, sfbWhiteArrowDown, sfbWhiteArrowDownWidth,
+         sfbWhiteArrowDownHeight);
+  setArt(assets.golfEggUp, golfEggUp, golfEggUpWidth, golfEggUpHeight);
+  setArt(assets.golfEggDown, golfEggDown, golfEggDownWidth, golfEggDownHeight);
   sfbSkyRows = nullptr;
   sfbSkyRuns = nullptr;
   if (assets.sky.data != nullptr && assets.sky.size >= 6 + sfbSkyHeight * 2) {
@@ -1125,6 +1205,9 @@ bool loadSuperFlashyMenuArt(SuperFlashyAssets& assets) {
     assets.release();
     return false;
   }
+  // The golf tile draws this egg. A missing file leaves that tile without it
+  // and keeps the rest of the menu.
+  load("golf/egg_up.rgb565", "rgb565", assets.golfEggUp);
   load("super/sky.rle", "rle332", assets.sky);
   return true;
 }

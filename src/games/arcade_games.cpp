@@ -10,7 +10,6 @@
 
 #include "audio/audio_helper.h"
 #include "game_assets.h"
-#include "games/builtin_sprites.h"
 #include "games/checkers_rules.h"
 #include "games/chess_rules.h"
 #include "golf_levels.h"

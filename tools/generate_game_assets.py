@@ -198,6 +198,51 @@ ROTATE = {
 }
 
 
+def center_in_tile(width: int, height: int, data: bytes, tile: int = 16) -> bytes:
+    """Center a sprite in a transparent tile, matching the old flashed art."""
+    if width > tile or height > tile:
+        raise ValueError(f"sprite {width}x{height} does not fit in {tile}x{tile}")
+    pixels = [TRANSPARENT] * (tile * tile)
+    small = [data[i] | (data[i + 1] << 8) for i in range(0, len(data), 2)]
+    left, top = (tile - width) // 2, (tile - height) // 2
+    for y in range(height):
+        start = (top + y) * tile + left
+        pixels[start:start + width] = small[y * width:(y + 1) * width]
+    return b"".join(struct.pack("<H", value) for value in pixels)
+
+
+def rotate_tile(pixels: list[int], quarter_turns: int, tile: int = 16) -> list[int]:
+    """Turn a tile counterclockwise, one quarter turn at a time."""
+    for _ in range(quarter_turns % 4):
+        pixels = [pixels[x * tile + (tile - 1 - y)]
+                  for y in range(tile) for x in range(tile)]
+    return pixels
+
+
+# Pictures that used to be compiled into the firmware. Each is stored as a
+# 16 x 16 tile, with smaller art centered on transparent pixels.
+BUILTIN_TILES = [
+    ("super/cloud.rgb565", SUPER_ART / "CloudTile.png"),
+    ("super/coin.rgb565", SUPER_ART / "Coin.png"),
+    ("super/yellow_grass.rgb565", SUPER_ART / "YellowGrassTile.png"),
+    ("super/cloud_background.rgb565", SUPER_ART / "CloudBackgroundTile.png"),
+    ("super/cardboard_box.rgb565", SUPER_ART / "CardboardBox.png"),
+    ("super/tennis_ball.rgb565", SUPER_ART / "TennisBall.png"),
+]
+WHITE_ARROW = SUPER_ART / "WhiteDirectionalBlock.png"
+WHITE_ARROW_TURNS = [
+    ("super/white_arrow_right.rgb565", 0),
+    ("super/white_arrow_up.rgb565", 1),
+    ("super/white_arrow_left.rgb565", 2),
+    ("super/white_arrow_down.rgb565", 3),
+]
+GOLF_ART = ART / "Flashy Golf"
+GOLF_SPRITES = [
+    ("golf/egg_up.rgb565", GOLF_ART / "GolfEggUp.png"),
+    ("golf/egg_down.rgb565", GOLF_ART / "GolfEggDown.png"),
+]
+
+
 def sky_rle() -> tuple[int, int, bytes]:
     """RGB332 sky, run-length encoded the way the game unpacks it."""
     image = Image.open(SUPER_ART / "Sky.png").convert("RGB")
@@ -266,6 +311,49 @@ def main() -> None:
     total += len(sky)
     print(f"super/sky.rle: {sky_w}x{sky_h}, {len(sky)} bytes")
 
+    for relative, source in BUILTIN_TILES:
+        width, height, data = convert_rgb565(source)
+        tiled = center_in_tile(width, height, data)
+        output = OUT / relative
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_bytes(tiled)
+        digest = hashlib.sha256(tiled).hexdigest()
+        manifest.append(f"{relative}|16|16|rgb565|{len(tiled)}|{digest}")
+        written.add(relative)
+        total += len(tiled)
+        print(f"{relative}: 16x16, {len(tiled)} bytes")
+
+    arrow_w, arrow_h, arrow_data = convert_rgb565(WHITE_ARROW)
+    if (arrow_w, arrow_h) != (16, 16):
+        raise ValueError(f"{WHITE_ARROW.name} must be 16x16")
+    arrow_pixels = [arrow_data[i] | (arrow_data[i + 1] << 8)
+                    for i in range(0, len(arrow_data), 2)]
+    for relative, turns in WHITE_ARROW_TURNS:
+        turned = rotate_tile(arrow_pixels, turns)
+        tiled = b"".join(struct.pack("<H", value) for value in turned)
+        output = OUT / relative
+        output.write_bytes(tiled)
+        digest = hashlib.sha256(tiled).hexdigest()
+        manifest.append(f"{relative}|16|16|rgb565|{len(tiled)}|{digest}")
+        written.add(relative)
+        total += len(tiled)
+        print(f"{relative}: 16x16, {len(tiled)} bytes")
+
+    for relative, source in GOLF_SPRITES:
+        width, height, data = convert_rgb565(source)
+        if (width, height) != (20, 16):
+            raise ValueError(f"{source.name} must be 20x16")
+        output = OUT / relative
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_bytes(data)
+        digest = hashlib.sha256(data).hexdigest()
+        manifest.append(
+            f"{relative}|{width}|{height}|rgb565|{len(data)}|{digest}"
+        )
+        written.add(relative)
+        total += len(data)
+        print(f"{relative}: {width}x{height}, {len(data)} bytes")
+
     # Keep assets this script does not generate, such as the desk logo.
     if (OUT / "manifest.txt").exists():
         for line in (OUT / "manifest.txt").read_text(encoding="utf-8").splitlines():
@@ -273,6 +361,10 @@ def main() -> None:
             if "|" in line and path not in written and not path.startswith("#") \
                     and path != "manifest_version":
                 manifest.append(line)
+                written.add(path)
+                parts = line.split("|")
+                if len(parts) >= 5 and parts[4].isdigit():
+                    total += int(parts[4])
                 print(f"kept {path}")
 
     logo = OUT / "desk" / "spotify_logo.rgb565"
@@ -286,7 +378,7 @@ def main() -> None:
 
     (OUT / "manifest.txt").write_text("\n".join(manifest) + "\n",
                                       encoding="utf-8")
-    print(f"Wrote {OUT / 'manifest.txt'} ({len(ASSETS)} assets, {total} bytes)")
+    print(f"Wrote {OUT / 'manifest.txt'} ({len(written)} assets, {total} bytes)")
 
 
 if __name__ == "__main__":

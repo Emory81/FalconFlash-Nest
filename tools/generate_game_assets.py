@@ -243,6 +243,14 @@ GOLF_SPRITES = [
 ]
 
 
+# Glow frog poses, kept at their own sizes, which the game knows.
+FROG_SPRITES = [
+    ("super/frog.rgb565", SUPER_ART / "GlowFrog.png", (22, 20)),
+    ("super/frog_puffed.rgb565", SUPER_ART / "GlowFrogPuffed.png", (25, 20)),
+    ("super/frog_leaping.rgb565", SUPER_ART / "GlowFrogLeaping.png", (24, 25)),
+]
+
+
 def sky_rle() -> tuple[int, int, bytes]:
     """RGB332 sky, run-length encoded the way the game unpacks it."""
     image = Image.open(SUPER_ART / "Sky.png").convert("RGB")
@@ -343,6 +351,21 @@ def main() -> None:
         width, height, data = convert_rgb565(source)
         if (width, height) != (20, 16):
             raise ValueError(f"{source.name} must be 20x16")
+        output = OUT / relative
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_bytes(data)
+        digest = hashlib.sha256(data).hexdigest()
+        manifest.append(
+            f"{relative}|{width}|{height}|rgb565|{len(data)}|{digest}"
+        )
+        written.add(relative)
+        total += len(data)
+        print(f"{relative}: {width}x{height}, {len(data)} bytes")
+
+    for relative, source, size in FROG_SPRITES:
+        width, height, data = convert_rgb565(source)
+        if (width, height) != size:
+            raise ValueError(f"{source.name} must be {size[0]}x{size[1]}")
         output = OUT / relative
         output.parent.mkdir(parents=True, exist_ok=True)
         output.write_bytes(data)

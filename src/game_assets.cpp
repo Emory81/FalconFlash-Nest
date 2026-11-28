@@ -694,6 +694,9 @@ void SuperFlashyAssets::release() {
   whiteArrowDown.release();
   golfEggUp.release();
   golfEggDown.release();
+  frog.release();
+  frogPuffed.release();
+  frogLeaping.release();
   sky.release();
 }
 
@@ -943,7 +946,10 @@ bool loadSuperFlashyAssets(SuperFlashyAssets& assets, bool withSky) {
       load("super/white_arrow_up.rgb565", "rgb565", assets.whiteArrowUp) &&
       load("super/white_arrow_down.rgb565", "rgb565", assets.whiteArrowDown) &&
       load("golf/egg_up.rgb565", "rgb565", assets.golfEggUp) &&
-      load("golf/egg_down.rgb565", "rgb565", assets.golfEggDown);
+      load("golf/egg_down.rgb565", "rgb565", assets.golfEggDown) &&
+      load("super/frog.rgb565", "rgb565", assets.frog) &&
+      load("super/frog_puffed.rgb565", "rgb565", assets.frogPuffed) &&
+      load("super/frog_leaping.rgb565", "rgb565", assets.frogLeaping);
   if (ok && withSky) {
     ok = load("super/sky.rle", "rle332", assets.sky);
   }
@@ -1110,6 +1116,15 @@ uint16_t golfEggUpHeight = 0;
 const uint16_t* golfEggDown = nullptr;
 uint16_t golfEggDownWidth = 0;
 uint16_t golfEggDownHeight = 0;
+const uint16_t* sfbFrog = nullptr;
+uint16_t sfbFrogWidth = 0;
+uint16_t sfbFrogHeight = 0;
+const uint16_t* sfbFrogPuffed = nullptr;
+uint16_t sfbFrogPuffedWidth = 0;
+uint16_t sfbFrogPuffedHeight = 0;
+const uint16_t* sfbFrogLeaping = nullptr;
+uint16_t sfbFrogLeapingWidth = 0;
+uint16_t sfbFrogLeapingHeight = 0;
 const uint16_t* sfbSkyRows = nullptr;
 const uint8_t* sfbSkyRuns = nullptr;
 
@@ -1182,6 +1197,11 @@ void bindSuperFlashyArt(const SuperFlashyAssets& assets) {
          sfbWhiteArrowDownHeight);
   setArt(assets.golfEggUp, golfEggUp, golfEggUpWidth, golfEggUpHeight);
   setArt(assets.golfEggDown, golfEggDown, golfEggDownWidth, golfEggDownHeight);
+  setArt(assets.frog, sfbFrog, sfbFrogWidth, sfbFrogHeight);
+  setArt(assets.frogPuffed, sfbFrogPuffed, sfbFrogPuffedWidth,
+         sfbFrogPuffedHeight);
+  setArt(assets.frogLeaping, sfbFrogLeaping, sfbFrogLeapingWidth,
+         sfbFrogLeapingHeight);
   sfbSkyRows = nullptr;
   sfbSkyRuns = nullptr;
   if (assets.sky.data != nullptr && assets.sky.size >= 6 + sfbSkyHeight * 2) {

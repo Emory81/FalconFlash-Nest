@@ -38,12 +38,17 @@ SYMBOLS = {
     "U": "direction block, passable moving up",
     "D": "direction block, passable moving down",
     "F": "fox",
+    "f": "glow frog",
     "B": "box",
     "M": "mystery box",
     "m": "magic bean box",
     "b": "coin brick",
     "P": "cardboard box (carry and throw)",
     "T": "tennis ball (carry and throw)",
+    "h": "red egg (refills hearts)",
+    "z": "blue egg (speed boost)",
+    "k": "rotten egg (a rat hatches from it)",
+    "A": "rat",
     **{d: f"bean spot for sublevel {d}" for d in "0123456789"},
 }
 
@@ -61,10 +66,10 @@ def natural_key(path: Path):
 
 def split_sections(lines):
     """[(None, main map), (number, sublevel map), ...]. A line holding only a
-    number, anywhere after the main map starts, begins that sublevel."""
+    digit, anywhere after the main map starts, begins that sublevel."""
     sections = [(None, [])]
     for ln in lines:
-        if re.fullmatch(r"\d+", ln) and any(l.strip() for l in sections[0][1]):
+        if re.fullmatch(r"\d", ln) and any(l.strip() for l in sections[0][1]):
             number = int(ln)
             if any(n == number for n, _ in sections):
                 raise LevelError(f"sublevel {number} appears twice")
@@ -109,7 +114,7 @@ def is_dirt(cell, col, row, width, rows):
     keeps the dirt behind it. cell(col, row) gives the symbol, row 0 at the
     bottom. The level editor uses this too."""
     ch = cell(col, row)
-    if ch == "H" or (ch in "OICc0123456789" and 0 < col < width - 1
+    if ch == "H" or (ch in "OIChcz0123456789" and 0 < col < width - 1
                      and cell(col - 1, row) == "H"
                      and cell(col + 1, row) == "H"):
         return True
@@ -117,7 +122,8 @@ def is_dirt(cell, col, row, width, rows):
                 for c, r in ((col - 1, row), (col + 1, row),
                              (col, row - 1), (col, row + 1)))
     # Coins and enemies need only two sides.
-    return (ch in "SOICc" and sides >= 3) or (ch in "CGgFPT" and sides >= 2)
+    return ((ch in "SOIChcz" and sides >= 3)
+            or (ch in "CGgFfPTkA" and sides >= 2))
 
 
 def parse_map(lines, is_sub):
@@ -186,6 +192,9 @@ def parse_map(lines, is_sub):
 
     starts, nests, gorillas, foxes, boxes, golds = [], [], [], [], [], []
     spots, infinities, coins, greens, items = [], [], [], [], []
+    frogs = []
+    cardboard = set()  # cells a cardboard box ends up in
+    loose = []         # eggs and rats placed in the map
     for col in range(width):
         for row in range(rows):
             ch = cell(col, row)
@@ -198,6 +207,8 @@ def parse_map(lines, is_sub):
                                  1 if ch == "g" else 0))
             elif ch == "F":
                 foxes.append((col, stand_row("F (fox)", col, row)))
+            elif ch == "f":
+                frogs.append((col, stand_row("f (glow frog)", col, row)))
             elif ch == "O":
                 golds.append((col, row))  # stays where it is drawn
             elif ch == "I":
@@ -206,9 +217,27 @@ def parse_map(lines, is_sub):
                 coins.append((col, row))
             elif ch == "c":
                 greens.append((col, row))
+            elif ch == "h":
+                loose.append((col, row, 0))  # stays where it is drawn
+            elif ch == "z":
+                loose.append((col, row, 1))
+            elif ch == "k":
+                loose.append((col, stand_row("k (rotten egg)", col, row), 2))
+            elif ch == "A":
+                loose.append((col, stand_row("A (rat)", col, row), 3))
             elif ch in ("P", "T"):
-                items.append((col, stand_row("P/T (box or ball)", col, row),
-                              1 if ch == "T" else 0))
+                # These also come to rest on a cardboard box, so they stack.
+                # Rows are read bottom up, so the one below is already placed.
+                at = row
+                while (at > 0 and not holds(col, at - 1)
+                       and (col, at - 1) not in cardboard):
+                    at -= 1
+                if at == 0:
+                    raise LevelError(f"{ch} (box or ball) at column {col + 1} "
+                                     "has no ground underneath")
+                if ch == "P":
+                    cardboard.add((col, at))
+                items.append((col, at, 1 if ch == "T" else 0))
             elif ch in ("B", "M", "m", "b"):
                 kind = {"B": 0, "M": 1, "m": 2, "b": 3}[ch]
                 boxes.append((col * TILE, row * TILE, kind))
@@ -244,6 +273,7 @@ def parse_map(lines, is_sub):
         "yellow": yellow,
         "spots": spots, "infinities": infinities,
         "coins": coins, "greens": greens, "items": items,
+        "loose": loose, "frogs": frogs,
     }, warnings
 
 
@@ -299,6 +329,8 @@ def emit_map(lines, p, lv):
     lines.append(f"constexpr int16_t {p}_GREENS[][2] = {{{pairs(lv['greens'] or [(0, 0)])}}};")
     lines.append(f"constexpr uint32_t {p}_YELLOW[] = {{\n{c_array(lv['yellow'], fmt=hexu)}\n}};")
     lines.append(f"constexpr int16_t {p}_ITEMS[][3] = {{{pairs(lv['items'] or [(0, 0, 0)])}}};")
+    lines.append(f"constexpr int16_t {p}_LOOSE[][3] = {{{pairs(lv['loose'] or [(0, 0, 0)])}}};")
+    lines.append(f"constexpr int16_t {p}_FROGS[][2] = {{{pairs(lv['frogs'] or [(0, 0)])}}};")
     lines.append("")
 
 
@@ -310,7 +342,9 @@ def initializer(p, lv, subs="nullptr, nullptr, 0"):
             f"{len(lv['golds'])}, {p}_GRASSY, {p}_SPOTS, {len(lv['spots'])}, "
             f"{subs}, {p}_INFINITIES, {len(lv['infinities'])}, "
             f"{p}_COINS, {len(lv['coins'])}, {p}_GREENS, {len(lv['greens'])}, "
-            f"{p}_YELLOW, {p}_ITEMS, {len(lv['items'])}}}")
+            f"{p}_YELLOW, {p}_ITEMS, {len(lv['items'])}, "
+            f"{p}_LOOSE, {len(lv['loose'])}, "
+            f"{p}_FROGS, {len(lv['frogs'])}}}")
 
 
 def emit(levels):
@@ -319,6 +353,9 @@ def emit(levels):
 
     def most(key, floor=1):
         return max([len(lv[key]) for lv in maps] + [floor])
+
+    specials = max([sum(b[2] != 0 for b in lv["boxes"]) + len(lv["loose"])
+                    for lv in maps] + [1])
 
     lines = [
         "#pragma once",
@@ -336,7 +373,7 @@ def emit(levels):
         "  const int16_t (*boxes)[3];        // {x px, bottom px above the map bottom,",
         "                                    //  0 brick / 1 mystery / 2 magic bean",
         "                                    //  / 3 coin brick}",
-        "  uint8_t boxCount;",
+        "  uint16_t boxCount;",
         "  const int16_t (*foxes)[2];        // {column, row}",
         "  uint8_t foxCount;",
         "  const int16_t (*nests)[2];        // {column, row}; any one is the goal",
@@ -361,11 +398,20 @@ def emit(levels):
         "  const uint32_t* yellow;           // per column: yellow grass tiles",
         "  const int16_t (*items)[3];        // {column, row, 0 box / 1 tennis ball}",
         "  uint8_t itemCount;",
+        "  const int16_t (*loose)[3];        // {column, row, 0 red egg / 1 blue",
+        "                                    //  / 2 rotten egg / 3 rat}",
+        "  uint16_t looseCount;",
+        "  const int16_t (*frogs)[2];        // glow frogs {column, row}",
+        "  uint8_t frogCount;",
         "};",
         "",
         f"constexpr uint8_t LEVEL_MAX_GORILLAS = {most('gorillas')};",
-        f"constexpr uint8_t LEVEL_MAX_BOXES = {most('boxes')};",
+        f"constexpr uint16_t LEVEL_MAX_BOXES = {most('boxes')};",
+        "// Most in one map: boxes that give something out (not plain bricks),",
+        "// plus placed eggs and rats.",
+        f"constexpr uint16_t LEVEL_MAX_SPECIALS = {specials};",
         f"constexpr uint8_t LEVEL_MAX_FOXES = {most('foxes')};",
+        f"constexpr uint8_t LEVEL_MAX_FROGS = {most('frogs')};",
         f"constexpr int16_t LEVEL_MAX_ROWS = {max(lv['rows'] for lv in maps)};",
         f"constexpr uint8_t LEVEL_MAX_NESTS = {most('nests')};",
         f"constexpr uint8_t LEVEL_MAX_GOLDS = {most('golds')};",

@@ -26,6 +26,7 @@ python tools/level_editor.py
 It opens `level1.txt` (or pass another file) and needs Pillow
 (`pip install pillow`). Left-click or drag to place, right-click to erase,
 Shift+drag to fill an area, middle-click to pick up the block under the mouse.
+The arrow keys pick the direction block pointing that way.
 Keys: `E` switches the eraser on and off, `1` grass (press again for yellow
 grass), `2` dirt, `3` box, `4` mystery box, `5` coin.
 Enemies, the start, the nest, cardboard boxes and tennis balls are shown where
@@ -56,6 +57,11 @@ are padded with air, so you don't need trailing dots.
 | `C` | coin (collectible; hangs where you draw it) |
 | `c` | green egg (extra life; hangs where you draw it) |
 | `F` | fox |
+| `f` | glow frog (hops faster the nearer you get, sometimes sideways; stomp it) |
+| `A` | rat (waits until you come near, then chases you) |
+| `h` | red egg (refills hearts; hangs where you draw it) |
+| `z` | blue egg (speed boost; hangs where you draw it) |
+| `k` | rotten egg (looks like a red egg; a rat hatches when you come near) |
 | `B` | box (breaks when bumped from below) |
 | `M` | mystery box (hatches an egg: red refills hearts, blue is speed, green is an extra life, or sometimes a rat) |
 | `m` | magic bean box (pushes out a bean) |
@@ -82,7 +88,7 @@ XXXXXXXXXXXX..XX
 - **Yellow grass:** `Y` works like grass for enemies and things that fall on
   it. You only stand on it from above, as on a `U` block, and crouching drops
   you through it. It stays yellow in sublevels.
-- **Enemies, start, nest, `P` and `T`:** these drop from where you draw them onto the first
+- **Enemies (`f` too), start, nest, `k`, `P` and `T`:** these drop from where you draw them onto the first
   solid tile or box below, so draw them on or above their floor. They need ground under
   them (not a pit).
 - **Boxes:** a box is a full block: you and enemies can stand and walk on it,
@@ -127,8 +133,8 @@ XXXXXXXXXXXX..XX
 - A bean that falls down a pit drops out of the sky again in the same column.
 - Climbing off the top of the screen takes you to a sublevel.
 
-**Sublevels** go in the same file, under the main map. A line holding only a
-number starts that sublevel:
+**Sublevels** go in the same file, under the main map. A line holding only one
+digit starts that sublevel:
 
 ```
 (the main map)
@@ -161,13 +167,23 @@ nest in its main map or a sublevel.
 ## Cardboard boxes and tennis balls
 
 - Walk or run into one and it slides away.
+- Both fall when nothing is under them. You can stand on a cardboard box that is
+  sitting still, and boxes (or a ball) can rest on top of it. Draw `P`s above
+  each other for a ready-made stack, or set one down against another to put it
+  on top (up to three high).
 - Touch it while crouched to pick it up. You carry one thing at a time (a box,
   a ball or a bean), and it goes with you into other areas.
 - To use it, hold crouch and let go: after a short hold (0.3 s) it is thrown the
   way you face; after a long one (1.5 s, you hear a beep) it is set down one
   block ahead. A quick press still just crouches or stands.
+- When the hold is long enough to set it down, the bird moves it from its back
+  to its front.
+- A tennis ball flies faster than a cardboard box.
 - A thrown cardboard box knocks an enemy back and stuns it for about 2 seconds.
   A stunned enemy can't hurt you. A thrown tennis ball kills it.
+- A thrown box or ball collects the eggs and coins it touches for you. A rotten
+  egg it hits cracks open instead.
+- Every direction block holds them up, whichever way its arrow points.
 - One that falls down a pit is gone until the level restarts.
 
 ## What the player can do

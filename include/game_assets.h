@@ -78,6 +78,9 @@ struct SuperFlashyAssets {
   GameAssetImage whiteArrowDown;
   GameAssetImage golfEggUp;
   GameAssetImage golfEggDown;
+  GameAssetImage frog;
+  GameAssetImage frogPuffed;
+  GameAssetImage frogLeaping;
   GameAssetImage sky;
 
   void release();

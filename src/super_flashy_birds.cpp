@@ -46,10 +46,13 @@ constexpr int16_t MAX_ROWS = LEVEL_MAX_ROWS;  // tallest level, in tiles
 // defines `Level` and the LEVELS table. PlatformIO runs it before each build.
 static_assert(TILE == 16, "levels/*.txt maps assume 16 px tiles");
 constexpr uint8_t MAX_GORILLAS = LEVEL_MAX_GORILLAS;
-constexpr uint8_t BOX_MAX = LEVEL_MAX_BOXES;
+constexpr uint16_t BOX_MAX = LEVEL_MAX_BOXES;
 // The slots after the boxes hold the nests.
-constexpr uint8_t BOX_SLOTS = BOX_MAX + LEVEL_MAX_NESTS;
+constexpr uint16_t BOX_SLOTS = BOX_MAX + LEVEL_MAX_NESTS;
+// Only boxes that give something out need room for an egg, rat or bean.
+constexpr uint16_t SPECIAL_SLOTS = LEVEL_MAX_SPECIALS;
 constexpr uint8_t FOX_MAX = LEVEL_MAX_FOXES;
+constexpr uint8_t FROG_MAX = LEVEL_MAX_FROGS;
 
 const Level* level = &LEVELS[0];
 
@@ -64,7 +67,12 @@ constexpr uint32_t MOMENTUM_GRACE_MS = 350;
 constexpr uint32_t JUMP_BUFFER_MS = 120;
 constexpr float CROUCH_SPEED = 2.4f;  // walk while crouched
 constexpr float STOMP_BOUNCE = -8.0f;
-constexpr float PUSH_SPEED = 3.5f;  // knockback speed when a gorilla bumps the bird
+// Jump pressed as the bird lands on an enemy: about twice a normal jump.
+constexpr float STOMP_BOOST_VELOCITY = -15.0f;
+constexpr uint32_t STOMP_BOOST_MS = 250;  // how late the press may come
+// How far below an enemy's head the feet may have been and still stomp it.
+constexpr float STOMP_REACH = 10.0f;
+constexpr float PUSH_SPEED = 7.0f;  // knockback speed when a gorilla bumps the bird
 constexpr uint32_t EXIT_HOLD_MS = 3000;
 constexpr uint32_t EXIT_SHOW_MS = 1500;
 
@@ -203,6 +211,7 @@ struct Box {
   bool broken;
   bool used;  // mystery box already opened
   uint8_t bump;  // little hop animation after a hit
+  uint16_t slot;  // its place in eggs / beans (not used by plain bricks)
 };
 
 enum class EggState : uint8_t { None, Emerging, Idle, Hop, Open };
@@ -234,6 +243,40 @@ struct Rat {
   bool facingRight;
   uint8_t stun;
   float knockVx;
+  bool asleep;  // placed in the map: waits until the bird comes near
+};
+
+// Glow frogs puff their throats while they sit. The nearer the bird, the less
+// they wait between hops, straight up and down. Now and then they dart a block
+// or two to one side along the ground, and later back again.
+constexpr int16_t FROG_W = 22;  // the sitting art; the other two are bigger
+constexpr int16_t FROG_H = 20;
+constexpr float FROG_HOP_VELOCITY = -8.2f;     // about 44 px high
+constexpr float FROG_DASH_SPEED = 8.0f;  // sideways, half a block a tick
+constexpr int FROG_STROLL_ONE_IN = 100;  // per tick left alone (~3 s)
+constexpr int FROG_SIDE_ONE_IN = 3;      // of its moves with the bird near
+constexpr float FROG_NOTICE_DIST = 9 * TILE;   // starts hopping this close
+constexpr float FROG_FRANTIC_DIST = 2 * TILE;  // hops fastest this close
+constexpr uint8_t FROG_LONG_WAIT = 50;         // ticks sat between hops, far
+constexpr uint8_t FROG_SHORT_WAIT = 3;         // and near
+// After landing a jump it sits this long (2 s) before that wait even starts.
+constexpr uint8_t FROG_JUMP_COOLDOWN = 2000 / 30;  // ticks of FRAME_MS
+constexpr uint32_t FROG_PUFF_MS = 1200;
+
+struct Frog {
+  bool active;
+  float x;  // world x of the left side
+  float y;  // world y of the feet
+  float vy;
+  bool airborne;
+  bool facingRight;
+  uint8_t wait;  // ticks sat since the last landing
+  uint8_t stun;
+  float knockVx;
+  float homeX;    // where its sideways dashes start from and return to
+  float targetX;  // where this dash is heading
+  float dashVx;   // 0 unless darting sideways
+  uint8_t cooldown;  // ticks still to sit after a jump
 };
 
 // Timed effects and health for the bird.
@@ -264,8 +307,10 @@ constexpr int16_t NEST_H = 23;
 constexpr int16_t NEST_SINK = 0;
 
 Box boxes[BOX_SLOTS];  // slots from BOX_MAX on are nests (goals)
-Egg eggs[BOX_SLOTS];   // eggs[i] belongs to boxes[i]
-Rat rats[BOX_SLOTS];   // rats[i] hatched from eggs[i]
+// eggs[box.slot] came out of that box; the slots after the boxes' hold the eggs
+// and rats placed in the map.
+Egg eggs[SPECIAL_SLOTS];
+Rat rats[SPECIAL_SLOTS];  // rats[i] hatched from eggs[i]
 
 // Foxes: very quick. They sleep until the bird is near, race at it, crouch,
 // leap high, and at the top of the leap pounce forward.
@@ -297,6 +342,7 @@ struct Fox {
 };
 
 Fox foxes[FOX_MAX];
+Frog frogs[FROG_MAX];
 
 constexpr uint8_t STUN_TICKS = 70;  // about 2 s
 constexpr float STUN_KNOCK_SPEED = 4.5f;
@@ -338,9 +384,9 @@ struct Bean {
   float top;        // how high the vine has grown
 };
 
-// beans[i] came out of boxes[i]; the extra slots are for beans carried in
-// from another area.
-constexpr uint8_t BEAN_SLOTS = BOX_SLOTS + 4;
+// beans[box.slot] came out of that box; the extra slots are for beans carried
+// in from another area.
+constexpr uint16_t BEAN_SLOTS = SPECIAL_SLOTS + 4;
 Bean beans[BEAN_SLOTS];
 
 constexpr float VINE_GROW_SPEED = 6.0f;
@@ -363,6 +409,7 @@ struct Item {
   float vy;
   bool thrown;  // hurts enemies until it comes to rest
   bool armed;   // false until the bird stops touching an item it handled
+  float angle;  // how far a ball has turned, in radians (clockwise)
 };
 
 // The extra slots are for items carried in from another area.
@@ -375,6 +422,9 @@ constexpr float ITEM_SLIDE_SPEED = 3.5f;  // at least this fast when walked into
 constexpr float ITEM_FRICTION = 0.25f;
 constexpr float ITEM_BOUNCE = 0.3f;  // speed kept after hitting something
 constexpr float THROW_SPEED = 7.0f;
+constexpr float BALL_THROW_SPEED = 11.0f;
+// Fastest spin per tick; any quicker and it seems to turn backwards.
+constexpr float BALL_MAX_SPIN = 0.7f;
 constexpr float THROW_LIFT = -4.0f;
 constexpr uint32_t THROW_HOLD_MS = 300;  // shorter is an ordinary crouch press
 constexpr uint32_t ITEM_DROP_HOLD_MS = 1500;  // this long sets it down instead
@@ -475,7 +525,14 @@ float columnOverlap(const Player& p, int16_t col) {
   return right - left;
 }
 
-// Top of the highest intact box under a span (at or below `fromY`), or 1e9.
+// A cardboard box that is sitting still enough to be stood on.
+bool standable(const Item& it) {
+  return it.state == ItemState::Free && it.kind == ItemKind::Cardboard &&
+         !it.thrown && it.vy == 0;
+}
+
+// Top of the highest intact box, cardboard ones included, under a span (at or
+// below `fromY`), or 1e9.
 float boxSurface(float x, float w, float fromY, float minOverlap) {
   float best = 1e9f;
   for (const auto& b : boxes) {
@@ -484,6 +541,13 @@ float boxSurface(float x, float w, float fromY, float minOverlap) {
                           max(x, static_cast<float>(b.x));
     if (overlap < minOverlap) continue;
     if (b.y >= fromY - 4 && b.y < best) best = b.y;
+  }
+  for (const auto& it : items) {
+    if (!standable(it)) continue;
+    const float overlap = min(x + w, it.x + CARDBOARD_SIZE) - max(x, it.x);
+    if (overlap < minOverlap) continue;
+    const float top = it.y - CARDBOARD_SIZE;
+    if (top >= fromY - 4 && top < best) best = top;
   }
   return best;
 }
@@ -641,11 +705,11 @@ void hitBox(Box& b) {
   audioPlayTone(880, 40);
   if (b.kind == BoxKind::Bean) {
     const int16_t col = b.x / TILE;
-    beans[&b - boxes] = {BeanState::Emerging, col, static_cast<float>(b.y + TILE),
+    beans[b.slot] = {BeanState::Emerging, col, static_cast<float>(b.y + TILE),
                          0, static_cast<float>(b.y), true, 0};
     return;
   }
-  Egg& e = eggs[&b - boxes];
+  Egg& e = eggs[b.slot];
   e.restY = static_cast<float>(b.y);
   e.x = b.x + (b.w - EGG_SIZE) / 2.0f;
   e.y = e.restY + EGG_SIZE;  // starts hidden inside the box
@@ -1032,13 +1096,35 @@ void drawBean(TFT_eSPI& d, int16_t x, int16_t bottom, bool flip = false) {
              flip, sfbBeanHeight, 1);
 }
 
+// A copy of a 16 x 16 picture turned clockwise about its middle.
+void turnTile(const uint16_t* art, float angle, uint16_t* out) {
+  const float c = cosf(angle);
+  const float s = sinf(angle);
+  for (int y = 0; y < 16; ++y) {
+    for (int x = 0; x < 16; ++x) {
+      const float dx = x - 7.5f;
+      const float dy = y - 7.5f;
+      const int sx = static_cast<int>(floorf(c * dx + s * dy + 8.0f));
+      const int sy = static_cast<int>(floorf(-s * dx + c * dy + 8.0f));
+      out[y * 16 + x] = sx < 0 || sx >= 16 || sy < 0 || sy >= 16
+                            ? SFB_TRANSPARENT
+                            : pgm_read_word(&art[sy * 16 + sx]);
+    }
+  }
+}
+
 // An item with its bottom-left at (x, bottom): x on screen, bottom in the
 // world. The 16 px picture is centered on the item.
 void drawItem(TFT_eSPI& d, const Item& it, int16_t x, int16_t bottom) {
   const int16_t s = itemSize(it);
-  drawScaled(d, x + s / 2 - 8, bottom - s / 2 - 8, 16, 16,
-             it.kind == ItemKind::Ball ? sfbTennisBall : sfbCardboardBox, false,
-             16, 1);
+  const uint16_t* art =
+      it.kind == ItemKind::Ball ? sfbTennisBall : sfbCardboardBox;
+  uint16_t turned[16 * 16];
+  if (it.kind == ItemKind::Ball && it.angle != 0) {
+    turnTile(art, it.angle, turned);
+    art = turned;
+  }
+  drawScaled(d, x + s / 2 - 8, bottom - s / 2 - 8, 16, 16, art, false, 16, 1);
 }
 
 // Little stars over a stunned enemy; `top` is the world y of its head.
@@ -1141,20 +1227,61 @@ void drawBoxesAndEggs(TFT_eSPI& d, int16_t cameraX) {
   }
 }
 
+// A rare egg in its 16 px cell (x on screen, top in the world): it swells and
+// shrinks inside a dotted halo that grows and fades with it.
+void drawGlowingEgg(TFT_eSPI& d, int16_t x, int16_t top, const uint16_t* art,
+                    uint16_t glow) {
+  constexpr uint32_t PULSE_MS = 1200;
+  constexpr int16_t MAX_SIZE = 19;
+  if (art == nullptr) return;
+  const float pulse =
+      0.5f + 0.5f * sinf((millis() % PULSE_MS) * 2.0f * PI / PULSE_MS);
+
+  const int16_t cx = x + EGG_SIZE / 2;
+  const int16_t cy = top + EGG_SIZE / 2 - gCameraY;
+  const float radius = 9.0f + 4.0f * pulse;
+  const int16_t reach = static_cast<int16_t>(radius) + 2;
+  for (int16_t dy = -reach; dy <= reach; ++dy) {
+    const int16_t y = cy + dy;
+    if (y < gClipTop || y >= gClipBottom || y < 0 || y >= d.height()) continue;
+    for (int16_t dx = -reach; dx <= reach; ++dx) {
+      // A little taller than wide, like the egg.
+      const float far = sqrtf(dx * dx + dy * dy * 0.8f);
+      if (far > radius) continue;
+      // Half the pixels near the egg, a quarter further out.
+      const bool lit = far < radius - 3.0f ? ((cx + dx + y) & 1) == 0
+                                           : ((cx + dx) & 1) == 0 && (y & 1) == 0;
+      if (lit) d.drawPixel(cx + dx, y, glow);
+    }
+  }
+
+  const int16_t size = EGG_SIZE - 1 + static_cast<int16_t>(pulse * 4.0f);
+  const int16_t n = min(size, MAX_SIZE);
+  uint16_t scaled[MAX_SIZE * MAX_SIZE];
+  for (int16_t py = 0; py < n; ++py) {
+    for (int16_t px = 0; px < n; ++px) {
+      scaled[py * n + px] = pgm_read_word(
+          &art[(py * EGG_SIZE / n) * EGG_SIZE + px * EGG_SIZE / n]);
+    }
+  }
+  drawScaled(d, cx - n / 2, top + EGG_SIZE / 2 - n / 2, n, n, scaled, false, n,
+             1);
+}
+
 void drawGoldEggs(TFT_eSPI& d, int16_t cameraX, int16_t screenH) {
   for (uint8_t i = 0; i < level->goldCount; ++i) {
     if (goldTaken[i]) continue;
     const int16_t x = level->golds[i][0] * TILE - cameraX;
-    if (x + EGG_SIZE < 0 || x > d.width()) continue;
-    drawScaled(d, x, rowTop(level->golds[i][1], screenH), 16, 16, sfbGoldEgg,
-               false, EGG_SIZE, 1);
+    if (x + EGG_SIZE + 8 < 0 || x - 8 > d.width()) continue;
+    drawGlowingEgg(d, x, rowTop(level->golds[i][1], screenH), sfbGoldEgg,
+                   0xFFE0);
   }
   for (uint8_t i = 0; i < level->infinityCount; ++i) {
     if (infinityTaken[i]) continue;
     const int16_t x = level->infinities[i][0] * TILE - cameraX;
-    if (x + EGG_SIZE < 0 || x > d.width()) continue;
-    drawScaled(d, x, rowTop(level->infinities[i][1], screenH), 16, 16,
-               sfbInfinityEgg, false, EGG_SIZE, 1);
+    if (x + EGG_SIZE + 8 < 0 || x - 8 > d.width()) continue;
+    drawGlowingEgg(d, x, rowTop(level->infinities[i][1], screenH),
+                   sfbInfinityEgg, TFT_WHITE);
   }
   for (uint16_t i = 0; i < level->coinCount; ++i) {
     if (coinTaken[i]) continue;
@@ -1189,6 +1316,7 @@ struct Hud {
   float sink;  // how far the bird is drawn below its feet line right now
   uint32_t levelMs;  // time on this level
   uint32_t totalMs;  // time since the first level
+  bool dropReady;    // letting go of crouch now sets the carried item down
 };
 
 // m:ss.t, e.g. 1:05.3
@@ -1267,6 +1395,33 @@ void drawFrame(TFT_eSPI& d, const Player& p, const Gorilla* gorillas,
     }
   }
 
+  for (uint8_t i = 0; i < FROG_MAX; ++i) {
+    const Frog& f = frogs[i];
+    if (!f.active) continue;
+    const int16_t fx = static_cast<int16_t>(f.x) - cameraX;
+    if (fx + FROG_W + 3 < 0 || fx - 3 > d.width()) continue;
+    // The art faces left. Each frog puffs out of step with the others.
+    const uint16_t* art = sfbFrog;
+    int16_t w = FROG_W;
+    int16_t h = FROG_H;
+    int16_t left = fx;
+    if (f.airborne || f.dashVx != 0) {
+      art = sfbFrogLeaping;
+      w = 24;
+      h = 25;
+      left = fx - 1;
+    } else if ((millis() / FROG_PUFF_MS + i) % 2 != 0) {
+      art = sfbFrogPuffed;
+      w = 25;
+      if (!f.facingRight) left = fx + FROG_W - w;  // the throat swells forward
+    }
+    drawScaled(d, left, static_cast<int16_t>(f.y) - h, w, h, art,
+               f.facingRight, h, 1);
+    if (f.stun > 0) {
+      drawStun(d, fx + FROG_W / 2, static_cast<int16_t>(f.y) - FROG_H);
+    }
+  }
+
   for (const auto& c : corpses) {
     if (!c.active) continue;
     const int16_t cx = static_cast<int16_t>(c.x) - cameraX;
@@ -1314,7 +1469,7 @@ void drawFrame(TFT_eSPI& d, const Player& p, const Gorilla* gorillas,
     artW = 16;  // StandStill
   }
   for (const auto& it : items) {  // carried: behind the bird's back
-    if (it.state != ItemState::Carried || hud.blink) continue;
+    if (it.state != ItemState::Carried || hud.blink || hud.dropReady) continue;
     drawItem(d, it,
              static_cast<int16_t>(p.x) - cameraX + (p.facingRight ? -9 : 9),
              static_cast<int16_t>(p.y) - (p.ducking ? 4 : 9));
@@ -1325,6 +1480,13 @@ void drawFrame(TFT_eSPI& d, const Player& p, const Gorilla* gorillas,
     drawScaled(d, static_cast<int16_t>(p.x) - (artW - 16) * BIRD_SCALE / 2 - cameraX,
                static_cast<int16_t>(p.y + hud.sink) - destH, artW, artH, art,
                !p.facingRight, destH, BIRD_SCALE);
+  }
+  // Ready to be set down: held out in front of the bird instead.
+  for (const auto& it : items) {
+    if (it.state != ItemState::Carried || hud.blink || !hud.dropReady) continue;
+    const int16_t ahead = p.facingRight ? PLAYER_W - 4 : 4 - itemSize(it);
+    drawItem(d, it, static_cast<int16_t>(p.x) - cameraX + ahead,
+             static_cast<int16_t>(p.y) - (p.ducking ? 0 : 6));
   }
   for (const auto& n : beans) {  // a carried bean rides on the bird's back
     if (n.state != BeanState::Carried || hud.blink) continue;
@@ -1448,11 +1610,29 @@ bool boxAt(int16_t col, int16_t row, int16_t screenH) {
   return false;
 }
 
+float gBirdPrevY = 0;   // the bird's y before this tick's movement
+bool gStomped = false;  // an enemy was stomped this tick
+
+// True if the bird came down this tick onto a head at height `top`. It goes by
+// how far the bird moved, not by vy: landing on the ground in the same tick, or
+// bouncing off another enemy, changes vy first.
+bool cameDownOn(const Player& p, float top) {
+  return p.y > gBirdPrevY + 0.01f && gBirdPrevY + BIRD_SINK <= top + STOMP_REACH;
+}
+
+void stompBounce(Player& p) {
+  p.vy = STOMP_BOUNCE;
+  p.onGround = false;
+  gStomped = true;
+  audioPlayTone(990, 30);
+}
+
 void updateGorillas(Gorilla* g, Player& p, int16_t screenH) {
   const float playerX = p.x + PLAYER_W / 2.0f;
   for (uint8_t i = 0; i < MAX_GORILLAS; ++i) {
     Gorilla& a = g[i];
     if (!a.alive) continue;
+    const float wasY = a.y;
     float nextX = a.x;
     const bool stunned = a.stun > 0;
     if (stunned) {
@@ -1504,12 +1684,12 @@ void updateGorillas(Gorilla* g, Player& p, int16_t screenH) {
     const float feet = p.y + BIRD_SINK;
     const float headTop = a.y - GORILLA_H + GORILLA_SINK;
     const bool overlapX = p.x + PLAYER_W > a.x && p.x < a.x + GORILLA_W;
-    if (overlapX && p.vy > 0 && feet >= headTop &&
-        feet - p.vy <= headTop + 8) {
+    // A hopping gorilla may have risen into the bird, so its old head counts.
+    const float wasHeadTop = wasY - GORILLA_H + GORILLA_SINK;
+    if (overlapX && feet >= headTop &&
+        cameDownOn(p, max(headTop, wasHeadTop))) {
       a.alive = false;
-      p.vy = STOMP_BOUNCE;
-      p.onGround = false;
-      audioPlayTone(990, 30);
+      stompBounce(p);
       continue;
     }
 
@@ -1555,9 +1735,12 @@ void initObjects(int16_t screenH) {
   for (auto& taken : coinTaken) taken = false;
   coinCount = 0;
   for (auto& taken : greenTaken) taken = false;
-  for (uint8_t i = 0; i < BOX_SLOTS; ++i) {
+  for (uint16_t i = 0; i < SPECIAL_SLOTS; ++i) {
     eggs[i] = {EggState::None, 0, 0, 0, 0, 0, false, EggKind::Red};
     rats[i] = {false, 0, 0, 0, true};
+  }
+  uint16_t specials = 0;
+  for (uint16_t i = 0; i < BOX_SLOTS; ++i) {
     if (i < level->boxCount) {
       const int16_t* spawn = level->boxes[i];
       boxes[i] = {spawn[0], static_cast<int16_t>(screenH - spawn[1] - BOX_SIZE),
@@ -1566,9 +1749,31 @@ void initObjects(int16_t screenH) {
                   : spawn[2] == 2 ? BoxKind::Bean
                   : spawn[2]    ? BoxKind::Mystery
                                 : BoxKind::Plain,
-                  false, false, 0};
+                  false, false, 0, 0};
+      if (boxes[i].kind != BoxKind::Plain) boxes[i].slot = specials++;
     } else {
       boxes[i] = {0, 0, BOX_SIZE, BOX_SIZE, BoxKind::Plain, true, false, 0};
+    }
+  }
+  // Eggs and rats placed in the map take the slots after the boxes'.
+  for (uint16_t i = 0; i < level->looseCount; ++i) {
+    const int16_t col = level->loose[i][0];
+    const float bottom = spawnY(level->loose[i][1], screenH);
+    const int16_t type = level->loose[i][2];  // red, blue, rotten, rat
+    const uint16_t slot = specials++;
+    if (type == 3) {
+      rats[slot] = {true, col * TILE + (TILE - RAT_W) / 2.0f, bottom, 0, false};
+      rats[slot].asleep = true;
+    } else {
+      // A rotten egg looks like any red one until the bird comes near.
+      eggs[slot] = {EggState::Idle,
+                    static_cast<float>(col * TILE),
+                    bottom,
+                    0,
+                    bottom,
+                    0,
+                    type == 2,
+                    type == 1 ? EggKind::Blue : EggKind::Red};
     }
   }
   // Nests: bottom on the ground, centered over their column.
@@ -1580,6 +1785,18 @@ void initObjects(int16_t screenH) {
         static_cast<int16_t>(spawnY(row, screenH) - NEST_H + NEST_SINK),
         NEST_W, NEST_H,
         BoxKind::Nest, false, false, 0};
+  }
+  for (uint8_t i = 0; i < FROG_MAX; ++i) {
+    if (i >= level->frogCount) {
+      frogs[i] = {false, 0, 0, 0, false, false, 0, 0, 0, 0, 0, 0};
+      continue;
+    }
+    const int16_t frogCol = level->frogs[i][0];
+    const float frogX = frogCol * TILE + (TILE - FROG_W) / 2.0f;
+    frogs[i] = {true,
+                frogX,
+                static_cast<float>(spawnY(level->frogs[i][1], screenH)),
+                0, false, false, 0, 0, 0, frogX, frogX, 0};
   }
   for (uint8_t i = 0; i < FOX_MAX; ++i) {
     if (i >= level->foxCount) {
@@ -1608,16 +1825,15 @@ void hurtPlayer(Player& p, Status& st, uint32_t now, float fromX) {
 // The bird touching an enemy that is w x h with its feet at (x, y): stomping
 // from above kills it (returns true), anything else bites the bird.
 bool touchEnemy(Player& p, Status& st, uint32_t now, float x, float y,
-                float w, float h, bool stunned) {
+                float w, float h, bool stunned, float rose = 0) {
   const float top = y - h;
   const float pTop = p.y - boxHeight(p);
   const float pBottom = p.y + BIRD_SINK;
   const bool overlapX = p.x + PLAYER_W > x && p.x < x + w;
   if (!overlapX || pBottom < top || pTop > y) return false;
-  if (p.vy > 0 && pBottom - p.vy <= top + 8) {
-    p.vy = STOMP_BOUNCE;
-    p.onGround = false;
-    audioPlayTone(990, 30);
+  // An enemy that rose into the bird is judged by where its head was.
+  if (cameDownOn(p, top + rose)) {
+    stompBounce(p);
     return true;
   }
   if (!stunned) hurtPlayer(p, st, now, x + w / 2.0f);
@@ -1636,6 +1852,167 @@ void slideKnocked(float& x, float y, float w, float& vx, int16_t screenH) {
     vx = 0;
   }
   slowKnock(vx);
+}
+
+// What an egg or coin out of a box does for the player.
+void takeEgg(EggKind kind, Status& st, uint32_t now) {
+  if (kind == EggKind::Coin) {
+    ++coinCount;
+  } else if (kind == EggKind::Blue) {
+    st.speedBoostUntil = now + BOOST_MS;
+  } else if (kind == EggKind::Green) {
+    ++st.lives;
+  } else {
+    st.hp = PLAYER_MAX_HP;
+  }
+  audioPlayTone(1320, 60);
+}
+
+// True if a frog at x could not be there: a wall or box where its body goes.
+bool frogBlocked(float x, float y, int16_t screenH) {
+  if (x < 0 || x + FROG_W > worldW()) return true;
+  for (const float height : {2.0f, FROG_H - 2.0f}) {
+    const int16_t row =
+        static_cast<int16_t>(floorf((screenH - (y - height)) / TILE));
+    for (const float side : {0.0f, FROG_W - 0.01f}) {
+      const int16_t col = columnAt(x + side);
+      if (solidTile(col, row) || boxAt(col, row, screenH)) return true;
+    }
+  }
+  return false;
+}
+
+// Starts a sitting frog darting 1 or 2 blocks sideways, or back home if it is
+// away. It only goes where there is level ground and nothing in the way; false
+// if there is nowhere to go.
+bool frogDash(Frog& f, int16_t screenH) {
+  const auto canReach = [&](float to) {
+    const float ground = surfaceBelow(to, FROG_W, f.y, 4.0f, screenH);
+    if (ground < 0 || ground - f.y >= 4) return false;
+    const float step = to > f.x ? 4.0f : -4.0f;
+    for (float x = f.x; fabsf(to - x) > 4.0f; x += step) {
+      if (frogBlocked(x + step, f.y, screenH)) return false;
+    }
+    return !frogBlocked(to, f.y, screenH);
+  };
+
+  float to = f.homeX;
+  bool found = fabsf(f.x - f.homeX) > 2.0f && canReach(to);
+  if (!found) {
+    const float side = random(2) == 0 ? -1.0f : 1.0f;
+    const int blocks = random(1, 3);
+    // The picked way and distance first, then what else there is.
+    const float tries[] = {side * blocks, -side * blocks, side, -side};
+    for (const float t : tries) {
+      to = f.x + t * TILE;
+      if (canReach(to)) {
+        found = true;
+        break;
+      }
+    }
+    if (found) f.homeX = f.x;
+  }
+  if (!found) return false;
+  f.targetX = to;
+  f.dashVx = to > f.x ? FROG_DASH_SPEED : -FROG_DASH_SPEED;
+  f.facingRight = to > f.x;
+  return true;
+}
+
+void updateFrogs(Player& p, Status& st, uint32_t now, int16_t screenH) {
+  const float playerX = p.x + PLAYER_W / 2.0f;
+  for (auto& f : frogs) {
+    if (!f.active) continue;
+    const float dx = playerX - (f.x + FROG_W / 2.0f);
+    const float prevY = f.y;
+    if (f.stun > 0) {
+      --f.stun;
+      slideKnocked(f.x, f.y, FROG_W, f.knockVx, screenH);
+      f.homeX = f.x;  // knocked somewhere new
+      f.dashVx = 0;
+    } else if (f.dashVx != 0) {
+      const float left = f.targetX - f.x;
+      const bool arrives = fabsf(left) <= FROG_DASH_SPEED;
+      const float nextX = f.x + (arrives ? left : f.dashVx);
+      if (frogBlocked(nextX, f.y, screenH)) {
+        f.dashVx = 0;
+      } else {
+        f.x = nextX;
+        if (arrives) f.dashVx = 0;
+      }
+    }
+
+    // Gravity always, so a frog falls if its brick breaks.
+    f.vy = min(f.vy + GRAVITY, MAX_FALL);
+    f.y += f.vy;
+    if (f.vy < 0) {  // a low ceiling cuts the hop short
+      const int16_t row = static_cast<int16_t>(
+          floorf((screenH - (f.y - FROG_H)) / TILE));
+      const int16_t col = columnAt(f.x + FROG_W / 2.0f);
+      if (solidTile(col, row) || boxAt(col, row, screenH)) {
+        f.y = prevY;
+        f.vy = 0;
+      }
+    }
+    const float surface = surfaceBelow(f.x, FROG_W, prevY, 4.0f, screenH);
+    if (f.vy >= 0 && surface >= 0 && f.y >= surface) {
+      f.y = surface;
+      f.vy = 0;
+      f.airborne = false;
+    } else {
+      f.airborne = true;
+      f.wait = 0;
+      f.dashVx = 0;
+    }
+    if (f.y > screenH + FALL_RESET_DEPTH) {
+      f.active = false;
+      continue;
+    }
+
+    const bool sitting = !f.airborne && f.stun == 0 && f.dashVx == 0;
+    if (sitting && f.cooldown > 0) {
+      --f.cooldown;
+      f.facingRight = dx > 0;
+    } else if (sitting) {
+      f.facingRight = dx > 0;
+      bool hop = false;
+      bool sideways = false;
+      if (fabsf(dx) < FROG_NOTICE_DIST && fabsf(p.y - f.y) < 8 * TILE) {
+        // 0 when frantic, 1 at the edge of noticing.
+        const float away = constrain(
+            (fabsf(dx) - FROG_FRANTIC_DIST) /
+                (FROG_NOTICE_DIST - FROG_FRANTIC_DIST),
+            0.0f, 1.0f);
+        const float pause =
+            FROG_SHORT_WAIT + away * (FROG_LONG_WAIT - FROG_SHORT_WAIT);
+        if (++f.wait >= pause) {
+          hop = true;
+          sideways = random(FROG_SIDE_ONE_IN) == 0;
+        }
+      } else {
+        f.wait = 0;
+        hop = sideways = random(FROG_STROLL_ONE_IN) == 0;
+      }
+      if (hop) {
+        f.wait = 0;
+        const bool dashed = sideways && frogDash(f, screenH);
+        // Left alone it only darts about; with the bird near it jumps whenever
+        // it is not darting.
+        const bool near = fabsf(dx) < FROG_NOTICE_DIST &&
+                          fabsf(p.y - f.y) < 8 * TILE;
+        if (!dashed && near) {
+          f.vy = FROG_HOP_VELOCITY;
+          f.airborne = true;
+          f.cooldown = FROG_JUMP_COOLDOWN;
+        }
+      }
+    }
+
+    if (touchEnemy(p, st, now, f.x, f.y, FROG_W, FROG_H, f.stun > 0,
+                   max(0.0f, prevY - f.y))) {
+      f.active = false;
+    }
+  }
 }
 
 bool updateObjects(Player& p, Status& st, uint32_t now, int16_t screenH) {
@@ -1698,7 +2075,7 @@ bool updateObjects(Player& p, Status& st, uint32_t now, int16_t screenH) {
     }
   }
 
-  for (uint8_t i = 0; i < BOX_SLOTS; ++i) {
+  for (uint16_t i = 0; i < SPECIAL_SLOTS; ++i) {
     Egg& e = eggs[i];
     const float eggX = e.x + EGG_SIZE / 2.0f;
     switch (e.state) {
@@ -1726,16 +2103,7 @@ bool updateObjects(Player& p, Status& st, uint32_t now, int16_t screenH) {
                    pBottom > e.y - EGG_SIZE && pTop < e.y) {
           // Grabbed.
           e.state = EggState::None;
-          if (e.kind == EggKind::Coin) {
-            ++coinCount;
-          } else if (e.kind == EggKind::Blue) {
-            st.speedBoostUntil = now + BOOST_MS;
-          } else if (e.kind == EggKind::Green) {
-            ++st.lives;
-          } else {
-            st.hp = PLAYER_MAX_HP;
-          }
-          audioPlayTone(1320, 60);
+          takeEgg(e.kind, st, now);
         }
         break;
       case EggState::Hop:
@@ -1768,10 +2136,14 @@ bool updateObjects(Player& p, Status& st, uint32_t now, int16_t screenH) {
     }
     // Chase the bird along the ground; walls stop it (it cannot climb).
     const float dx = playerX - (r.x + RAT_W / 2.0f);
+    if (r.asleep && (r.stun > 0 || (fabsf(dx) < FOX_WAKE_DIST &&
+                                    fabsf(p.y - r.y) < 8 * TILE))) {
+      r.asleep = false;
+    }
     if (r.stun > 0) {
       --r.stun;
       slideKnocked(r.x, r.y, RAT_W, r.knockVx, screenH);
-    } else if (fabsf(dx) > RAT_SPEED) {
+    } else if (!r.asleep && fabsf(dx) > RAT_SPEED) {
       const float dir = dx > 0 ? 1.0f : -1.0f;
       r.facingRight = dir > 0;
       const float nextX = r.x + dir * RAT_SPEED;
@@ -1895,6 +2267,7 @@ bool updateObjects(Player& p, Status& st, uint32_t now, int16_t screenH) {
       f.active = false;
     }
   }
+  updateFrogs(p, st, now, screenH);
   return atNest;
 }
 
@@ -1934,6 +2307,11 @@ void knockEnemiesOn(const Box& b, Gorilla* gorillas, float fromX) {
     if (!f.active || !standsOn(f.x, FOX_W, f.y)) continue;
     f.active = false;
     knockOff(sfbFox, FOX_W, FOX_H, f.x, f.y, fromX);
+  }
+  for (auto& f : frogs) {
+    if (!f.active || !standsOn(f.x, FROG_W, f.y)) continue;
+    f.active = false;
+    knockOff(sfbFrog, FROG_W, FROG_H, f.x, f.y, fromX);
   }
 }
 
@@ -1998,6 +2376,64 @@ bool itemBlocked(float x, float y, int16_t s, ArrowDir moving,
   return false;
 }
 
+// The cardboard box, other than `self`, that overlaps something s px square at
+// (x, bottom y), or null.
+const Item* cardboardAt(float x, float y, int16_t s, const Item* self) {
+  for (const auto& o : items) {
+    if (&o == self || o.state != ItemState::Free ||
+        o.kind != ItemKind::Cardboard) {
+      continue;
+    }
+    if (x + s > o.x && x < o.x + CARDBOARD_SIZE &&
+        y - 1.0f > o.y - CARDBOARD_SIZE && y - s < o.y - 1.0f) {
+      return &o;
+    }
+  }
+  return nullptr;
+}
+
+// A thrown item collects the eggs and coins it flies through. A rotten egg is
+// not collected: it wakes and cracks open.
+void itemCollects(const Item& it, Status& st, uint32_t now, int16_t screenH) {
+  const float s = itemSize(it);
+  const auto hits = [&](float x, float top) {
+    return it.x + s > x && it.x < x + EGG_SIZE && it.y > top &&
+           it.y - s < top + EGG_SIZE;
+  };
+  // Takes the ones placed in the map that it touches, and says how many.
+  const auto sweep = [&](const int16_t(*spots)[2], uint16_t count,
+                         bool* taken, uint16_t tone) {
+    uint16_t got = 0;
+    for (uint16_t i = 0; i < count; ++i) {
+      if (taken[i] ||
+          !hits(spots[i][0] * TILE, rowTop(spots[i][1], screenH))) {
+        continue;
+      }
+      taken[i] = true;
+      ++got;
+      audioPlayTone(tone, 40);
+    }
+    return got;
+  };
+  goldCount += sweep(level->golds, level->goldCount, goldTaken, 1760);
+  infinityCount +=
+      sweep(level->infinities, level->infinityCount, infinityTaken, 2093);
+  coinCount += sweep(level->coins, level->coinCount, coinTaken, 1568);
+  st.lives += sweep(level->greens, level->greenCount, greenTaken, 1320);
+
+  for (auto& e : eggs) {
+    if (e.state != EggState::Idle || !hits(e.x, e.y - EGG_SIZE)) continue;
+    if (e.rotten) {
+      e.vy = EGG_HOP_VELOCITY;
+      e.state = EggState::Hop;
+      audioPlayTone(520, 30);
+    } else {
+      e.state = EggState::None;
+      takeEgg(e.kind, st, now);
+    }
+  }
+}
+
 // A thrown item meeting an enemy. True if it hit one.
 bool itemHitsEnemy(const Item& it, Gorilla* gorillas) {
   const float s = itemSize(it);
@@ -2048,10 +2484,26 @@ bool itemHitsEnemy(const Item& it, Gorilla* gorillas) {
     }
     return true;
   }
+  for (auto& f : frogs) {
+    if (!f.active || !hits(f.x, f.y, FROG_W, FROG_H)) continue;
+    if (ball) {
+      f.active = false;
+      knockOff(sfbFrog, FROG_W, FROG_H, f.x, f.y, fromX);
+    } else {
+      f.stun = STUN_TICKS;
+      f.knockVx = knock;
+      f.vy = 0;
+      f.wait = 0;
+      f.dashVx = 0;
+      audioPlayTone(250, 60);
+    }
+    return true;
+  }
   return false;
 }
 
-void updateItems(const Player& p, Gorilla* gorillas, int16_t screenH) {
+void updateItems(const Player& p, Gorilla* gorillas, Status& st, uint32_t now,
+                 int16_t screenH) {
   for (auto& it : items) {
     if (it.state != ItemState::Free) continue;
     const int16_t s = itemSize(it);
@@ -2059,10 +2511,19 @@ void updateItems(const Player& p, Gorilla* gorillas, int16_t screenH) {
     // Sideways.
     if (it.vx != 0) {
       const ArrowDir way = it.vx > 0 ? ARROW_RIGHT : ARROW_LEFT;
-      if (itemBlocked(it.x + it.vx, it.y, s, way, screenH)) {
+      // Boxes that already overlap are let apart.
+      const Item* other = cardboardAt(it.x + it.vx, it.y, s, &it);
+      if (itemBlocked(it.x + it.vx, it.y, s, way, screenH) ||
+          (other != nullptr && other != cardboardAt(it.x, it.y, s, &it))) {
         it.vx = -it.vx * ITEM_BOUNCE;
       } else {
         it.x += it.vx;
+        if (it.kind == ItemKind::Ball) {
+          // It turns as if rolling that far.
+          const float spin = constrain(it.vx / (BALL_SIZE / 2.0f),
+                                       -BALL_MAX_SPIN, BALL_MAX_SPIN);
+          it.angle = fmodf(it.angle + spin, 2.0f * PI);
+        }
       }
     }
 
@@ -2073,7 +2534,8 @@ void updateItems(const Player& p, Gorilla* gorillas, int16_t screenH) {
       it.vy = 0;
     }
     it.y += it.vy;
-    const float surface = surfaceBelow(it.x, s, prevY, 4.0f, screenH, true);
+    // Every direction block holds it up, whichever way its arrow points.
+    const float surface = surfaceBelow(it.x, s, prevY, 4.0f, screenH);
     if (it.vy >= 0 && surface >= 0 && it.y >= surface) {
       it.y = surface;
       it.vy = 0;
@@ -2086,6 +2548,7 @@ void updateItems(const Player& p, Gorilla* gorillas, int16_t screenH) {
       continue;
     }
 
+    if (it.thrown) itemCollects(it, st, now, screenH);
     if (it.thrown && itemHitsEnemy(it, gorillas)) {
       it.thrown = false;
       it.vx = -it.vx * ITEM_BOUNCE;
@@ -2122,7 +2585,9 @@ void throwItem(Item& it, const Player& p) {
   it.x = constrain(p.x + (PLAYER_W - s) / 2.0f, 0.0f,
                    static_cast<float>(worldW() - s));
   it.y = p.y - (p.ducking ? 0 : 8);
-  it.vx = (p.facingRight ? THROW_SPEED : -THROW_SPEED) + p.vx * 0.3f;
+  const float speed =
+      it.kind == ItemKind::Ball ? BALL_THROW_SPEED : THROW_SPEED;
+  it.vx = (p.facingRight ? speed : -speed) + p.vx * 0.3f;
   it.vy = THROW_LIFT;
   it.thrown = true;
   it.armed = false;
@@ -2137,16 +2602,24 @@ bool placeItem(Item& it, const Player& p, int16_t screenH) {
   const int16_t row =
       static_cast<int16_t>(floorf((screenH - (p.y - 1)) / TILE));
   if (col < 0 || col >= level->tiles || solidTile(col, row)) return false;
-  const float top = rowTop(row, screenH);
-  for (const auto& b : boxes) {
-    if (!b.broken && b.x < (col + 1) * TILE && b.x + b.w > col * TILE &&
-        b.y < top + TILE && b.y + b.h > top) {
-      return false;
-    }
+  const int16_t s = itemSize(it);
+  float x = col * TILE + (TILE - s) / 2.0f;
+  float bottom = rowBottom(row, screenH);
+  // Cardboard boxes already there: it goes on top of them, up to a stack of
+  // three.
+  for (uint8_t tries = 0; tries < 2; ++tries) {
+    const Item* under = cardboardAt(x, bottom, s, &it);
+    if (under == nullptr) break;
+    x = under->x + (CARDBOARD_SIZE - s) / 2.0f;
+    bottom = under->y - CARDBOARD_SIZE;
+  }
+  if (cardboardAt(x, bottom, s, &it) != nullptr ||
+      itemBlocked(x, bottom, s, ARROW_UP, screenH)) {
+    return false;
   }
   it.state = ItemState::Free;
-  it.x = col * TILE + (TILE - itemSize(it)) / 2.0f;
-  it.y = rowBottom(row, screenH);
+  it.x = x;
+  it.y = bottom;
   it.vx = 0;
   it.vy = 0;
   it.thrown = false;
@@ -2280,11 +2753,12 @@ int sublevelFor(const Level& here, const Level& main, int16_t col,
 // Everything in the main level that is kept while the bird is in a sublevel.
 struct AreaState {
   Box boxes[BOX_SLOTS];
-  Egg eggs[BOX_SLOTS];
-  Rat rats[BOX_SLOTS];
+  Egg eggs[SPECIAL_SLOTS];
+  Rat rats[SPECIAL_SLOTS];
   Bean beans[BEAN_SLOTS];
   Item items[ITEM_SLOTS];
   Fox foxes[FOX_MAX];
+  Frog frogs[FROG_MAX];
   Gorilla gorillas[MAX_GORILLAS];
   bool goldTaken[LEVEL_MAX_GOLDS];
   uint8_t goldCount;
@@ -2314,6 +2788,7 @@ void saveArea(const Gorilla* gorillas) {
   memcpy(mainArea->beans, beans, sizeof(beans));
   memcpy(mainArea->items, items, sizeof(items));
   memcpy(mainArea->foxes, foxes, sizeof(foxes));
+  memcpy(mainArea->frogs, frogs, sizeof(frogs));
   memcpy(mainArea->gorillas, gorillas, sizeof(mainArea->gorillas));
   memcpy(mainArea->goldTaken, goldTaken, sizeof(goldTaken));
   mainArea->goldCount = goldCount;
@@ -2332,6 +2807,7 @@ void restoreArea(Gorilla* gorillas) {
   memcpy(beans, mainArea->beans, sizeof(beans));
   memcpy(items, mainArea->items, sizeof(items));
   memcpy(foxes, mainArea->foxes, sizeof(foxes));
+  memcpy(frogs, mainArea->frogs, sizeof(frogs));
   memcpy(gorillas, mainArea->gorillas, sizeof(mainArea->gorillas));
   memcpy(goldTaken, mainArea->goldTaken, sizeof(goldTaken));
   goldCount = mainArea->goldCount;
@@ -2356,7 +2832,7 @@ bool takeCarriedBean(Bean& out) {
 
 // Bring a carried bean into the current area.
 void giveCarriedBean(const Bean& bean) {
-  int slot = BOX_SLOTS;
+  int slot = SPECIAL_SLOTS;
   while (slot < BEAN_SLOTS - 1 && beans[slot].state != BeanState::None) ++slot;
   beans[slot] = bean;
 }
@@ -2552,6 +3028,8 @@ void runSuperFlashyBirds(TFT_eSPI& display) {
   uint32_t exitHeldSince = 0;
   uint32_t lastDirectionHeld = 0;
   uint32_t jumpBufferUntil = 0;
+  uint32_t stompBoostUntil = 0;  // a jump press until then boosts off a stomp
+  bool stompBoosting = false;    // rising from a boost: letting go keeps it
   bool crouchWanted = false;  // BTN2 toggles it
   uint32_t levelMs = 0;  // time on the current level (running through deaths)
   uint32_t totalMs = 0;  // time across all levels
@@ -2644,6 +3122,14 @@ void runSuperFlashyBirds(TFT_eSPI& display) {
         gliding = false;
         crouchWanted = false;
         p.running = false;
+      } else if (climbing < 0 && now < stompBoostUntil) {
+        p.vy = STOMP_BOOST_VELOCITY;
+        p.onGround = false;
+        stompBoostUntil = 0;
+        stompBoosting = true;
+        jumpBufferUntil = 0;
+        gliding = false;
+        audioPlayTone(1100, 60);
       } else if (climbing < 0) {
         jumpBufferUntil = now + JUMP_BUFFER_MS;
         // Pressing jump again while already in the air toggles the glide.
@@ -2734,6 +3220,7 @@ void runSuperFlashyBirds(TFT_eSPI& display) {
       p.vy = 0;
       p.onGround = false;
       p.ducking = false;
+      stompBoosting = false;
       if (wantJump) p.y -= CLIMB_SPEED;
       if (held == Button::Button2) p.y += CLIMB_SPEED;
       if (p.y < vine.top) p.y = vine.top;
@@ -2742,7 +3229,9 @@ void runSuperFlashyBirds(TFT_eSPI& display) {
         p.onGround = true;
         climbing = -1;
       }
+      gBirdPrevY = p.y;  // climbing never stomps
     } else {
+      gBirdPrevY = p.y;
       p.ducking = crouchWanted || !hasHeadroom(p, worldH);
       if (p.ducking) p.running = false;
 
@@ -2775,7 +3264,8 @@ void runSuperFlashyBirds(TFT_eSPI& display) {
         p.onGround = false;
         audioPlayTone(660, 25);
       }
-      if (!wantJump && p.vy < JUMP_CUT_VELOCITY) {
+      if (p.vy >= 0) stompBoosting = false;
+      if (!wantJump && !stompBoosting && p.vy < JUMP_CUT_VELOCITY) {
         p.vy = JUMP_CUT_VELOCITY;
       }
       // Gliding cuts gravity (and the fall speed) while the bird is falling.
@@ -2814,12 +3304,26 @@ void runSuperFlashyBirds(TFT_eSPI& display) {
       knockEnemiesOn(*bumpedBox, gorillas, p.x + PLAYER_W / 2.0f);
       bumpedBox = nullptr;
     }
-    updateItems(p, gorillas, worldH);
+    updateItems(p, gorillas, status, now, worldH);
+    gStomped = false;
     updateGorillas(gorillas, p, worldH);
     updateParticles();
     updateCorpses(worldH);
     bool levelDone = updateObjects(p, status, now, worldH);
     updateBeans(p, worldH, skyY);
+    if (gStomped) {
+      if (now < jumpBufferUntil) {  // pressed just before landing
+        p.vy = STOMP_BOOST_VELOCITY;
+        stompBoosting = true;
+        stompBoostUntil = 0;
+        jumpBufferUntil = 0;
+        gliding = false;
+        audioPlayTone(1100, 60);
+      } else {
+        stompBoosting = false;
+        stompBoostUntil = now + STOMP_BOOST_MS;
+      }
+    }
     // Being bitten or bumped knocks the bird off a vine.
     if (climbing >= 0 && (p.vx != 0 || p.vy != 0)) climbing = -1;
 
@@ -2905,7 +3409,8 @@ void runSuperFlashyBirds(TFT_eSPI& display) {
         status.hp, status.lives,
         now < status.invulnUntil && (now / 100) % 2 == 0, gliding,
         climbing >= 0, visualSink,
-        levelMs, totalMs};
+        levelMs, totalMs,
+        crouchHoldStart != 0 && dropCued};
 
     // Camera follows the player, clamped to the world. A world shorter than
     // the screen sits at the bottom of it.

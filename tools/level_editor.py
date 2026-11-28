@@ -26,7 +26,7 @@ ICON = Path(__file__).resolve().with_suffix(".ico")
 ARROWS = levels.ARROWS            # "RLUD"
 ANGLES = (0, 180, 90, 270)        # counterclockwise, from art pointing right
 BOXES = "BMmb"
-SPRITE_CHARS = "SNGgFOICcPT"
+SPRITE_CHARS = "SNGgFfOICcPThzkA"
 ZOOMS = (1, 2, 3, 4)
 UNDO_LIMIT = 200
 NEW_WIDTH, NEW_HEIGHT = 60, 15
@@ -40,9 +40,12 @@ PALETTE = [
                ("b", "Coin brick")]),
     ("Throwables", [("P", "Cardboard box"), ("T", "Tennis ball")]),
     ("Characters", [("S", "Player start"), ("N", "Nest (goal)"),
-                    ("G", "Gorilla"), ("g", "Red gorilla"), ("F", "Fox")]),
+                    ("G", "Gorilla"), ("g", "Red gorilla"), ("F", "Fox"),
+                    ("A", "Rat"), ("f", "Glow frog")]),
     ("Collectibles", [("C", "Coin"), ("O", "Golden egg"),
-                      ("I", "Infinity egg"), ("c", "Green egg (life)")]),
+                      ("I", "Infinity egg"), ("c", "Green egg (life)"),
+                      ("h", "Red egg (hearts)"), ("z", "Blue egg (speed)"),
+                      ("k", "Rotten egg (rat)")]),
 ]
 NAMES = {ch: name for _, items in PALETTE for ch, name in items}
 NAMES.update({d: f"Bean spot for sublevel {d}" for d in "0123456789"})
@@ -97,7 +100,7 @@ def read_level(text):
             continue
         stripped = line.rstrip()
         current = parts[-1]
-        if re.fullmatch(r"\d+", stripped) and any(l.strip() for l in parts[0][2]):
+        if re.fullmatch(r"\d", stripped) and any(l.strip() for l in parts[0][2]):
             parts.append([int(stripped), pending, []])
             pending = []
             continue
@@ -181,8 +184,12 @@ class Art:
             "S": load("FlashyBirdStandStill.png"), "N": load("Nest.png"),
             "G": load("Gorilla.png"), "g": load("RedGorilla.png"),
             "F": load("Fox.png"), "C": load("Coin.png"),
+            "f": load("GlowFrog.png"),
             "O": load("GoldenEgg.png"), "I": load("InfinityEgg.png"),
-            "c": load("GreenEgg.png"),
+            "c": load("GreenEgg.png"), "h": load("RedEgg.png"),
+            "z": load("BlueEgg.png"), "A": load("Rat.png"),
+            # the game draws it as a red egg until it wakes; show it cracking
+            "k": load("CrackingEgg.png"),
         }
         for digit in "0123456789":
             spot = Image.new("RGBA", (TILE, TILE), (0, 0, 0, 0))
@@ -419,8 +426,8 @@ class Editor:
 
     def _build_ui(self):
         root = self.root
-        root.geometry("1280x820")
-        root.minsize(900, 720)  # keeps the whole palette visible
+        root.geometry("1280x860")
+        root.minsize(900, 800)  # keeps the whole palette visible
         top = ttk.Frame(root, padding=4)
         top.pack(side="top", fill="x")
         for text, command in (("New", self.new_level), ("Open", self.ask_open),
@@ -432,7 +439,8 @@ class Editor:
         self.map_box = ttk.Combobox(top, state="readonly", width=12)
         self.map_box.pack(side="left")
         self.map_box.bind("<<ComboboxSelected>>",
-                          lambda e: self.show_section(self.map_box.current()))
+                          lambda e: (self.show_section(self.map_box.current()),
+                                     self.canvas.focus_set()))
         ttk.Button(top, text="+ Sublevel", command=self.add_sublevel).pack(side="left")
         ttk.Button(top, text="Delete", command=self.delete_sublevel).pack(side="left")
         ttk.Button(top, text="Resize", command=self.ask_resize).pack(side="left", padx=(8, 0))
@@ -440,7 +448,8 @@ class Editor:
         zoom = ttk.Combobox(top, state="readonly", width=3, values=ZOOMS,
                             textvariable=self.zoom)
         zoom.pack(side="left")
-        zoom.bind("<<ComboboxSelected>>", lambda e: self.refresh())
+        zoom.bind("<<ComboboxSelected>>",
+                  lambda e: (self.refresh(), self.canvas.focus_set()))
         ttk.Checkbutton(top, text="Grid", variable=self.show_grid,
                         command=self.refresh).pack(side="left", padx=8)
 
@@ -522,6 +531,11 @@ class Editor:
                              ("4", ("M",)), ("5", ("C",))):
             self.root.bind(f"<KeyPress-{key}>",
                            lambda e, c=choices: self.choose(*c))
+        # arrow keys pick the direction block pointing that way
+        for key, ch in (("Right", "R"), ("Left", "L"), ("Up", "U"),
+                        ("Down", "D")):
+            self.root.bind(f"<KeyPress-{key}>",
+                           lambda e, c=ch: self.choose(c))
         for key in ("e", "E"):
             self.root.bind(f"<KeyPress-{key}>", lambda e: self.toggle_eraser())
         self.root.protocol("WM_DELETE_WINDOW", self.quit)
@@ -821,6 +835,8 @@ class Editor:
         grid[y][x] = ch
 
     def press(self, event, button):
+        # so arrow keys pick blocks again after using a drop-down list
+        self.canvas.focus_set()
         cell = self.cell_at(event)
         if cell is None or self.stroke:
             return

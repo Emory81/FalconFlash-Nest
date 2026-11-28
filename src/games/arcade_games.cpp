@@ -697,7 +697,7 @@ void saveGolfBest(uint8_t level, uint16_t best) {
 }
 
 void drawGolfSelect(TFT_eSPI& d, uint8_t chosen, const uint16_t* best) {
-  d.fillRect(0, 0, W, H, 0x5DFF);
+  drawSuperFlashySky(d, 0, W, H);
   for (int16_t x = 0; x < W; x += 16) {
     drawArt(d, x, H - 32, 16, 16, sfbGrass);
     drawArt(d, x, H - 16, 16, 16, sfbDirt);
@@ -1698,10 +1698,8 @@ void runFlashyGolf(TFT_eSPI& display) {
     }
     session.reserveBuffer();
   }
-  if (!session.fullBuffer()) {
-    sprites.sky.release();
-    session.reserveBuffer();
-  }
+  // Keep the cloudy sky. Dropping it left the course on a flat color.
+  if (!session.fullBuffer()) session.reserveBuffer();
   bindSuperFlashyArt(sprites);
 
   uint16_t best[GOLF_COUNT];
@@ -1843,7 +1841,7 @@ void runFlashyGolf(TFT_eSPI& display) {
       if (session.fullBuffer() && sfbSkyRuns != nullptr) {
         copySuperFlashySky(session.buffer(), (left / 4) % W);
       } else {
-        d.fillRect(0, 0, W, H, 0x5DFF);
+        drawSuperFlashySky(d, (left / 4) % W, d.width(), d.height());
       }
       for (int16_t col = left / 16;
            col < level.columns && col * 16 < left + W; ++col) {
@@ -2072,15 +2070,18 @@ void drawChessIcon(TFT_eSPI& d, int16_t x, int16_t y) {
 }
 
 void drawFlashyGolfIcon(TFT_eSPI& d, int16_t x, int16_t y) {
-  const int16_t left = x + 16;
-  for (int16_t i = 0; i < 4; ++i) {
-    drawArt(d, left + i * 16, y + 30, 16, 16, sfbGrass);
+  // Same sky box as the Flashy Birds and Runner tiles. The tile itself is
+  // black, so without this the golf picture has no background.
+  const int16_t left = x + 8;
+  drawSuperFlashySkyThumbnail(d, left, y, 80, 58);
+  for (int16_t i = 0; i < 5; ++i) {
+    drawArt(d, left + i * 16, y + 42, 16, 16, sfbGrass);
   }
-  d.fillRect(left + 40, y + 30, 18, 8, TFT_BLACK);
-  d.fillRect(left + 48, y + 2, 2, 36, TFT_WHITE);
-  d.fillTriangle(left + 50, y + 2, left + 50, y + 14, left + 63, y + 8,
+  d.fillRect(left + 32, y + 50, 16, 8, TFT_BLACK);
+  d.fillRect(left + 39, y + 16, 2, 42, TFT_WHITE);
+  d.fillTriangle(left + 41, y + 16, left + 41, y + 28, left + 54, y + 22,
                  TFT_RED);
-  drawArt(d, left + 10, y + 14, 20, 16, golfEggUp);
+  drawArt(d, left + 6, y + 26, 20, 16, golfEggUp);
 }
 
 void drawRockPaperScissorsIcon(TFT_eSPI& d, int16_t x, int16_t y) {

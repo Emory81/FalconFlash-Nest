@@ -219,6 +219,15 @@ bool validRelativePath(const char* path) {
          strstr(path, "//") == nullptr;
 }
 
+// LittleFS does not create missing folders when a file is opened, so a new
+// asset directory (such as golf/) has to exist before the download is saved.
+void ensureCacheDirectory(const String& filePath) {
+  const int slash = filePath.lastIndexOf('/');
+  if (slash <= 0) return;
+  const String directory = filePath.substring(0, slash);
+  if (!LittleFS.exists(directory)) LittleFS.mkdir(directory);
+}
+
 void ensureAssetDirectories() {
   lockFilesystem();
   if (!LittleFS.exists(CACHE_ROOT)) LittleFS.mkdir(CACHE_ROOT);
@@ -230,6 +239,9 @@ void ensureAssetDirectories() {
   }
   if (!LittleFS.exists("/game_assets/desk")) {
     LittleFS.mkdir("/game_assets/desk");
+  }
+  if (!LittleFS.exists("/game_assets/golf")) {
+    LittleFS.mkdir("/game_assets/golf");
   }
   unlockFilesystem();
 }
@@ -387,6 +399,7 @@ bool downloadAsset(const ManifestEntry& entry, TFT_eSPI* display,
 
   File file;
   lockFilesystem();
+  ensureCacheDirectory(temporary);
   file = LittleFS.open(temporary, FILE_WRITE);
   unlockFilesystem();
   if (!file) {

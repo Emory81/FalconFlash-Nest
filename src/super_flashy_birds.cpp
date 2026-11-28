@@ -2404,6 +2404,32 @@ void copySuperFlashySky(uint8_t* frame, int16_t offset) {
   copySky(frame, offset, sfbSkyHeight);
 }
 
+void drawSuperFlashySky(TFT_eSPI& d, int16_t offset, int16_t width,
+                        int16_t height) {
+  if (sfbSkyRuns == nullptr || sfbSkyRows == nullptr || width <= 0 ||
+      height <= 0) {
+    d.fillRect(0, 0, width, height, 0x5DFF);
+    return;
+  }
+  if (offset < 0) offset = 0;
+  offset %= sfbSkyWidth;
+  uint8_t line[sfbSkyWidth];
+  const int16_t rows = height < sfbSkyHeight ? height : sfbSkyHeight;
+  for (int16_t y = 0; y < rows; ++y) {
+    skyRow(y, line);
+    int16_t x = 0;
+    while (x < width) {
+      const uint8_t color = line[(x + offset) % sfbSkyWidth];
+      int16_t end = x + 1;
+      while (end < width && line[(end + offset) % sfbSkyWidth] == color) {
+        ++end;
+      }
+      d.drawFastHLine(x, y, end - x, d.color8to16(color));
+      x = end;
+    }
+  }
+}
+
 void drawSuperFlashySkyThumbnail(TFT_eSPI& d, int16_t x, int16_t y, int16_t w,
                                  int16_t h) {
   if (sfbSkyRuns == nullptr || sfbSkyRows == nullptr) {
